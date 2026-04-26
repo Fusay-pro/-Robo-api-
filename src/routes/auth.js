@@ -2,11 +2,10 @@ const router = require('express').Router();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const axios = require('axios');
 const { z } = require('zod');
 const { query } = require('../config/db');
 const { validate } = require('../middleware/validate');
-const { unauthorized, badRequest, serverError } = require('../utils/errors');
+const { unauthorized, badRequest, conflict } = require('../utils/errors');
 
 const ACCESS_EXPIRES  = '15m';
 const REFRESH_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000;
@@ -85,43 +84,30 @@ router.post('/logout', async (req, res) => {
   res.status(204).send();
 });
 
-// POST /auth/line
-router.post('/line', async (req, res) => {
-  const { code, redirect_uri } = req.body;
-  if (!code) return badRequest(res, 'code required');
-  try {
-    const tokenRes = await axios.post('https://api.line.me/oauth2/v2.1/token', null, {
-      params: {
-        grant_type:    'authorization_code',
-        code,
-        redirect_uri,
-        client_id:     process.env.LINE_CHANNEL_ID,
-        client_secret: process.env.LINE_CHANNEL_SECRET,
-      },
-    });
-    const profileRes = await axios.get('https://api.line.me/v2/profile', {
-      headers: { Authorization: `Bearer ${tokenRes.data.access_token}` },
-    });
-    const { userId: lineUserId, displayName } = profileRes.data;
-    let { rows } = await query('SELECT * FROM users WHERE line_user_id = $1', [lineUserId]);
-    let user = rows[0];
-    let profile_incomplete = false;
-    if (!user) {
-      const ins = await query(
-        `INSERT INTO users (role, name, line_user_id, created_at)
-         VALUES ('parent', $1, $2, NOW()) RETURNING *`,
-        [displayName, lineUserId]
-      );
-      user = ins.rows[0];
-      profile_incomplete = true;
-    }
+// POST /auth/register  (parents only)
+router.post('/register',
+  validate(z.object({
+    email:    z.string().email(),
+    password: z.string().min(8),
+    name:     z.string().min(1),
+    phone:    z.string().min(1),
+    consent:  z.literal(true, { errorMap: () => ({ message: 'Consent is required' }) }),
+  })),
+  async (req, res) => {
+    const { email, password, name, phone } = req.body;
+    const existing = await query('SELECT user_id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length) return conflict(res, 'Email already registered');
+    const password_hash = await bcrypt.hash(password, 10);
+    const { rows } = await query(
+      `INSERT INTO users (role, name, email, phone, password_hash, consent_given_at, created_at)
+       VALUES ('parent', $1, $2, $3, $4, NOW(), NOW()) RETURNING *`,
+      [name, email, phone, password_hash]
+    );
+    const user = rows[0];
     const access_token  = signAccess(user);
     const refresh_token = await createRefreshToken(user.user_id);
-    res.json({ access_token, refresh_token, profile_incomplete });
-  } catch (err) {
-    console.error('LINE OAuth error:', err.message);
-    return serverError(res, 'LINE authentication failed');
+    res.status(201).json({ access_token, refresh_token });
   }
-});
+);
 
 module.exports = router;

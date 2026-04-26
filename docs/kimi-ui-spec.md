@@ -9,28 +9,32 @@ Used by parents on their phones. Login via LINE. Thai-friendly UI.
 
 ---
 
-### Screen 1: Splash / Login
-**Purpose:** Entry point, LINE OAuth login
+### Screen 1: Login
+**Purpose:** Entry point for returning parents
 **Components:**
 - School logo + name
-- "Login with LINE" button (green, LINE brand color #06C755)
+- Email input
+- Password input
+- "Login" button
+- "Don't have an account? Register" link → goes to Screen 2
 - "Browse courses without account" link → goes to Screen 3
 
-**API:** `POST /auth/line` with `{ code, redirect_uri }` from LINE SDK
-**On success:** store `access_token` + `refresh_token` in secure storage
-**If `profile_incomplete: true`:** redirect to Screen 2
+**API:** `POST /auth/login` with `{ email, password }`
+**On success:** store `access_token` + `refresh_token` in secure storage, redirect to Screen 4 (Home)
 
 ---
 
-### Screen 2: Complete Profile (first login only)
-**Purpose:** Parent fills in their info after LINE login
+### Screen 2: Register (new parents)
+**Purpose:** Parent creates an account
 **Form fields:**
-- Full name (text)
-- Phone number (text)
+- Full name (required)
+- Email (required)
+- Password (required, min 8 characters)
+- Phone number (required)
 - Consent checkbox: "I agree to the school collecting my child's data for teaching purposes" — **required**
 
-**API:** `PATCH /my/profile` with `{ name, phone, consent_given_at: new Date().toISOString() }`
-**On success:** redirect to Screen 4 (Home)
+**API:** `POST /auth/register` with `{ name, email, password, phone, consent: true }`
+**On success:** store `access_token` + `refresh_token`, redirect to Screen 4 (Home)
 
 ---
 
