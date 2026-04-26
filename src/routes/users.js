@@ -1,0 +1,87 @@
+const router = require('express').Router();
+const { z } = require('zod');
+const bcrypt = require('bcrypt');
+const { query } = require('../config/db');
+const { validate } = require('../middleware/validate');
+const { roleGuard } = require('../middleware/roleGuard');
+const { notFound } = require('../utils/errors');
+
+const LIMIT_MAX = 200;
+
+router.get('/', roleGuard(['owner', 'super_owner']), async (req, res) => {
+  const limit  = Math.min(parseInt(req.query.limit)  || 50, LIMIT_MAX);
+  const offset = parseInt(req.query.offset) || 0;
+  const { rows } = await query(
+    `SELECT user_id, branch_id, role, name, email, phone, monthly_salary, active_from, active_until, created_at
+     FROM users WHERE branch_id = $1 AND deleted_at IS NULL AND role != 'parent'
+     ORDER BY name LIMIT $2 OFFSET $3`,
+    [req.user.branch_id, limit, offset]
+  );
+  const { rows: [{ count }] } = await query(
+    "SELECT COUNT(*) FROM users WHERE branch_id = $1 AND deleted_at IS NULL AND role != 'parent'",
+    [req.user.branch_id]
+  );
+  res.json({ data: rows, total: parseInt(count), limit, offset });
+});
+
+router.post('/',
+  roleGuard(['owner']),
+  validate(z.object({
+    name:           z.string().min(1),
+    email:          z.string().email(),
+    password:       z.string().min(8),
+    phone:          z.string().optional(),
+    role:           z.enum(['owner', 'staff']),
+    monthly_salary: z.number().positive().optional(),
+    active_from:    z.string().optional(),
+    active_until:   z.string().optional(),
+  })),
+  async (req, res) => {
+    const { password, ...fields } = req.body;
+    const hash = await bcrypt.hash(password, 10);
+    const { rows } = await query(
+      `INSERT INTO users (branch_id, role, name, email, password_hash, phone, monthly_salary, active_from, active_until)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING user_id, branch_id, role, name, email, phone`,
+      [req.user.branch_id, fields.role, fields.name, fields.email, hash, fields.phone,
+       fields.monthly_salary, fields.active_from, fields.active_until]
+    );
+    res.status(201).json(rows[0]);
+  }
+);
+
+router.patch('/:id',
+  roleGuard(['owner']),
+  validate(z.object({
+    name:           z.string().min(1).optional(),
+    phone:          z.string().optional(),
+    monthly_salary: z.number().positive().optional(),
+    active_from:    z.string().optional(),
+    active_until:   z.string().optional(),
+  })),
+  async (req, res) => {
+    const { name, phone, monthly_salary, active_from, active_until } = req.body;
+    const { rows } = await query(
+      `UPDATE users SET
+         name           = COALESCE($1, name),
+         phone          = COALESCE($2, phone),
+         monthly_salary = COALESCE($3, monthly_salary),
+         active_from    = COALESCE($4::date, active_from),
+         active_until   = COALESCE($5::date, active_until)
+       WHERE user_id = $6 AND branch_id = $7 AND deleted_at IS NULL
+       RETURNING user_id, branch_id, role, name, email, phone, monthly_salary, active_from, active_until`,
+      [name, phone, monthly_salary, active_from, active_until, req.params.id, req.user.branch_id]
+    );
+    if (!rows[0]) return notFound(res);
+    res.json(rows[0]);
+  }
+);
+
+router.delete('/:id', roleGuard(['owner']), async (req, res) => {
+  await query(
+    'UPDATE users SET deleted_at = NOW() WHERE user_id = $1 AND branch_id = $2',
+    [req.params.id, req.user.branch_id]
+  );
+  res.status(204).send();
+});
+
+module.exports = router;
