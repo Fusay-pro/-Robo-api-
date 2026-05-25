@@ -18,55 +18,68 @@ router.get('/capacity', roleGuard(['owner', 'super_owner']), async (req, res) =>
   res.json(rows);
 });
 
+function rangeClause(range) {
+  switch (range) {
+    case 'today': return `>= CURRENT_DATE AND < CURRENT_DATE + interval '1 day'`;
+    case 'week':  return `>= date_trunc('week', CURRENT_DATE) AND < date_trunc('week', CURRENT_DATE) + interval '7 days'`;
+    case 'year':  return `>= date_trunc('year', CURRENT_DATE) AND < date_trunc('year', CURRENT_DATE) + interval '1 year'`;
+    case 'all':   return `IS NOT NULL`;
+    default:      return `>= date_trunc('month', CURRENT_DATE) AND < date_trunc('month', CURRENT_DATE) + interval '1 month'`;
+  }
+}
+
 router.get('/profit', roleGuard(['owner', 'super_owner']), async (req, res) => {
-  const month = req.query.month || new Date().toISOString().slice(0, 7);
-  const monthStart = `${month}-01`;
+  const range = req.query.range || 'month';
+  const clause = rangeClause(range);
 
   const { rows: [data] } = await query(
     `SELECT
-       COALESCE(SUM(t.amount) FILTER (WHERE t.status = 'confirmed'), 0)       AS branch_revenue,
-       COALESCE(SUM(e.amount) FILTER (WHERE e.status = 'approved'), 0)         AS total_expenses
+       COALESCE(SUM(t.amount) FILTER (WHERE t.status = 'confirmed'), 0) AS branch_revenue,
+       COALESCE(SUM(e.amount) FILTER (WHERE e.status = 'approved'), 0)  AS total_expenses
      FROM branches b
-     LEFT JOIN transactions t ON t.branch_id = b.branch_id AND to_char(t.created_at, 'YYYY-MM') = $1
-     LEFT JOIN expenses e     ON e.branch_id = b.branch_id AND to_char(e.submitted_at, 'YYYY-MM') = $1
-     WHERE b.branch_id = $2`,
-    [month, req.user.branch_id]
+     LEFT JOIN transactions t ON t.branch_id = b.branch_id AND t.created_at ${clause}
+     LEFT JOIN expenses e     ON e.branch_id = b.branch_id AND e.submitted_at ${clause}
+     WHERE b.branch_id = $1`,
+    [req.user.branch_id]
   );
 
   const { rows: [cspData] } = await query(
     `SELECT COALESCE(SUM(csp.amount), 0) AS contract_revenue
      FROM contract_school_payments csp
      JOIN contract_schools cs ON csp.contract_school_id = cs.contract_school_id
-     WHERE cs.branch_id = $1 AND to_char(csp.created_at, 'YYYY-MM') = $2`,
-    [req.user.branch_id, month]
+     WHERE cs.branch_id = $1 AND csp.created_at ${clause}`,
+    [req.user.branch_id]
   );
 
-  const { rows: [salaryData] } = await query(
-    `SELECT COALESCE(SUM(
-       monthly_salary *
-       (LEAST(COALESCE(active_until, CURRENT_DATE),
-              (date_trunc('month', $2::date) + interval '1 month - 1 day')::date)
-        - GREATEST(active_from, date_trunc('month', $2::date)::date) + 1)::numeric
-       / EXTRACT(DAY FROM date_trunc('month', $2::date) + interval '1 month - 1 day')
-     ), 0) AS salary_cost
-     FROM users
-     WHERE branch_id = $1 AND role = 'staff' AND monthly_salary IS NOT NULL
-       AND active_from IS NOT NULL AND deleted_at IS NULL`,
-    [req.user.branch_id, monthStart]
+  const { rows: txRows } = await query(
+    `SELECT t.transaction_id, t.amount, t.payment_method, t.created_at, s.name AS student_name
+     FROM transactions t
+     JOIN students s ON t.student_id = s.student_id
+     WHERE t.branch_id = $1 AND t.created_at ${clause}
+     ORDER BY t.created_at DESC LIMIT 50`,
+    [req.user.branch_id]
   );
 
-  const revenue = Number(data.branch_revenue) + Number(cspData.contract_revenue);
-  const salary  = Number(salaryData.salary_cost);
+  const { rows: expRows } = await query(
+    `SELECT e.expense_id, e.amount, e.category, e.description, e.submitted_at, u.name AS submitted_by_name
+     FROM expenses e JOIN users u ON e.submitted_by_user_id = u.user_id
+     WHERE e.branch_id = $1 AND e.submitted_at ${clause}
+     ORDER BY e.submitted_at DESC LIMIT 50`,
+    [req.user.branch_id]
+  );
+
+  const revenue  = Number(data.branch_revenue) + Number(cspData.contract_revenue);
   const expenses = Number(data.total_expenses);
 
   res.json({
-    month,
+    range,
     branch_revenue:   Number(data.branch_revenue),
     contract_revenue: Number(cspData.contract_revenue),
     total_revenue:    revenue,
-    salary_cost:      salary,
     other_expenses:   expenses,
-    net_profit:       revenue - salary - expenses,
+    net_profit:       revenue - expenses,
+    transactions:     txRows,
+    expenses:         expRows,
   });
 });
 

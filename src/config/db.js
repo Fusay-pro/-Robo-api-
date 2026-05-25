@@ -1,6 +1,15 @@
 const { Pool } = require('pg');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Enable SSL for any non-localhost Postgres (Supabase, Railway, Neon, RDS, etc.).
+// Managed providers serve certs that aren't in Node's default trust store,
+// so we disable strict cert verification (still encrypted in transit).
+const url = process.env.DATABASE_URL || '';
+const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+
+const pool = new Pool({
+  connectionString: url,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+});
 
 async function query(text, params) {
   return pool.query(text, params);

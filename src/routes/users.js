@@ -8,6 +8,25 @@ const { notFound } = require('../utils/errors');
 
 const LIMIT_MAX = 200;
 
+// Change own password — any authenticated user
+router.patch('/me/password',
+  validate(z.object({
+    current_password: z.string().min(1),
+    new_password:     z.string().min(8),
+  })),
+  async (req, res) => {
+    const { current_password, new_password } = req.body;
+    const { rows } = await query('SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL', [req.user.user_id]);
+    const user = rows[0];
+    if (!user || !user.password_hash) return res.status(401).json({ error: 'User not found' });
+    const valid = await bcrypt.compare(current_password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(new_password, 10);
+    await query('UPDATE users SET password_hash = $1 WHERE user_id = $2', [hash, req.user.user_id]);
+    res.status(204).send();
+  }
+);
+
 router.get('/', roleGuard(['owner', 'super_owner']), async (req, res) => {
   const limit  = Math.min(parseInt(req.query.limit)  || 50, LIMIT_MAX);
   const offset = parseInt(req.query.offset) || 0;

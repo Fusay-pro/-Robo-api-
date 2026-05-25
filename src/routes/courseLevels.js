@@ -24,6 +24,21 @@ router.post('/',
   }
 );
 
+router.patch('/:id',
+  roleGuard(['owner']),
+  validate(z.object({ name: z.string().min(1) })),
+  async (req, res) => {
+    const { rows } = await query(
+      `UPDATE course_levels SET name = $1
+       WHERE level_id = $2 AND branch_id = $3 AND deleted_at IS NULL
+       RETURNING *`,
+      [req.body.name, req.params.id, req.user.branch_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: 'Level not found' });
+    res.json(rows[0]);
+  }
+);
+
 router.delete('/:id', roleGuard(['owner']), async (req, res) => {
   await query('UPDATE course_levels SET deleted_at = NOW() WHERE level_id = $1', [req.params.id]);
   res.status(204).send();

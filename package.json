@@ -9,7 +9,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "jest --runInBand --forceExit"
+    "test": "jest --runInBand --forceExit --passWithNoTests",
+    "demo:seed": "node seed_demo.js",
+    "demo:clear": "node clear_demo.js",
+    "demo:reset": "node clear_demo.js && node seed_demo.js"
   },
   "jest": {
     "testEnvironment": "node",
@@ -33,6 +36,7 @@
     "node-cron": "^4.2.1",
     "omise": "^1.1.0",
     "pg": "^8.20.0",
+    "resend": "^6.12.3",
     "uuid": "^14.0.0",
     "zod": "^4.3.6"
   },

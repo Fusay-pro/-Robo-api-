@@ -60,4 +60,9 @@ router.patch('/:id',
   }
 );
 
+router.delete('/:id', roleGuard(['owner']), async (req, res) => {
+  await query('UPDATE packages SET deleted_at = NOW() WHERE package_id = $1', [req.params.id]);
+  res.status(204).send();
+});
+
 module.exports = router;

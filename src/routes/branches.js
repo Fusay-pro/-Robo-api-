@@ -12,6 +12,43 @@ router.get('/', async (req, res) => {
   res.json(rows);
 });
 
+// Owner-facing per-branch settings (current user's branch)
+router.get('/settings', async (req, res) => {
+  const { rows } = await query(
+    `SELECT branch_id, name, address, phone, capacity_per_teacher, low_credit_threshold
+     FROM branches WHERE branch_id = $1 AND deleted_at IS NULL`,
+    [req.user.branch_id]
+  );
+  res.json(rows[0] || { low_credit_threshold: 3 });
+});
+
+router.patch('/settings',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({
+    name:                 z.string().min(1).optional(),
+    address:              z.string().optional(),
+    phone:                z.string().optional(),
+    capacity_per_teacher: z.number().int().positive().optional(),
+    low_credit_threshold: z.number().int().min(1).max(20).optional(),
+  })),
+  async (req, res) => {
+    const { name, address, phone, capacity_per_teacher, low_credit_threshold } = req.body;
+    const { rows } = await query(
+      `UPDATE branches SET
+         name                 = COALESCE($1, name),
+         address              = COALESCE($2, address),
+         phone                = COALESCE($3, phone),
+         capacity_per_teacher = COALESCE($4, capacity_per_teacher),
+         low_credit_threshold = COALESCE($5, low_credit_threshold)
+       WHERE branch_id = $6 AND deleted_at IS NULL
+       RETURNING branch_id, name, address, phone, capacity_per_teacher, low_credit_threshold`,
+      [name, address, phone, capacity_per_teacher, low_credit_threshold, req.user.branch_id]
+    );
+    if (!rows[0]) return notFound(res);
+    res.json(rows[0]);
+  }
+);
+
 router.post('/',
   roleGuard(['owner', 'super_owner']),
   validate(z.object({

@@ -3,7 +3,7 @@ const { getClassesRemaining } = require('./classesRemaining');
 const { checkCapacity } = require('./capacityCheck');
 const { sendToUser } = require('./pushNotify');
 
-async function createEnrollment({ studentId, scheduleId, packageId, parentUserId }) {
+async function createEnrollment({ studentId, scheduleId, packageId, parentUserId, bookingNote }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -28,9 +28,9 @@ async function createEnrollment({ studentId, scheduleId, packageId, parentUserId
     const lowWarning = pkg.remaining <= 3;
 
     const { rows: [enrollment] } = await client.query(
-      `INSERT INTO enrollments (student_id, schedule_id, customer_package_id, status, low_class_warning)
-       VALUES ($1, $2, $3, 'pending', $4) RETURNING *`,
-      [studentId, scheduleId, packageId, lowWarning]
+      `INSERT INTO enrollments (student_id, schedule_id, customer_package_id, status, low_class_warning, booking_note)
+       VALUES ($1, $2, $3, 'pending', $4, $5) RETURNING *`,
+      [studentId, scheduleId, packageId, lowWarning, bookingNote || null]
     );
 
     await client.query(

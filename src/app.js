@@ -18,6 +18,8 @@ function createApp() {
   // Rate limiting
   app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
   app.use('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false }));
+  // Stricter limit for OTP verification — 5 attempts per 15 min to prevent brute-force
+  app.use('/auth/verify-otp', rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false }));
 
   app.use(express.json());
   app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
@@ -55,6 +57,11 @@ function createApp() {
   app.use('/contracts',        require('./routes/contracts'));
   app.use('/warnings',         require('./routes/warnings'));
   app.use('/dashboard',        require('./routes/dashboard'));
+  app.use('/holidays',         require('./routes/holidays'));
+  app.use('/messages',         require('./routes/messages'));
+  app.use('/customer-packages', require('./routes/customerPackages'));
+  app.use('/announcements',    require('./routes/announcements'));
+  app.use('/requests',         require('./routes/requests'));
 
   // Global error handler
   app.use((err, req, res, next) => {

@@ -6,7 +6,7 @@ const { validate } = require('../middleware/validate');
 router.post('/',
   validate(z.object({
     fcm_token: z.string().min(1),
-    platform:  z.enum(['ios', 'android']),
+    platform:  z.enum(['ios', 'android', 'web']),
   })),
   async (req, res) => {
     const { fcm_token, platform } = req.body;
