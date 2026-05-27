@@ -13,7 +13,7 @@ const REFRESH_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000;
 
 function signAccess(user) {
   return jwt.sign(
-    { user_id: user.user_id, role: user.role, branch_id: user.branch_id },
+    { user_id: user.user_id, role: user.role, branch_id: user.branch_id, name: user.name },
     process.env.JWT_SECRET,
     { expiresIn: ACCESS_EXPIRES }
   );
@@ -62,7 +62,7 @@ router.post('/refresh', async (req, res) => {
   if (!refresh_token) return badRequest(res, 'refresh_token required');
   const hash = hashRefreshToken(refresh_token);
   const { rows } = await query(
-    `SELECT rt.token_id, u.user_id, u.role, u.branch_id
+    `SELECT rt.token_id, u.user_id, u.role, u.branch_id, u.name
      FROM refresh_tokens rt
      JOIN users u ON rt.user_id = u.user_id
      WHERE rt.token_hash = $1 AND rt.expires_at > NOW() AND u.deleted_at IS NULL
