@@ -11,7 +11,7 @@ router.get('/', roleGuard(['owner', 'staff']), async (req, res) => {
   const includeInactive = all === 'true' || all === '1';
   const activeClause = includeInactive ? '' : 'AND cp.is_active = true';
   const { rows } = await query(
-    `SELECT cp.customer_package_id, cp.student_id, cp.package_id, cp.is_active, cp.created_at,
+    `SELECT cp.customer_package_id, cp.student_id, cp.package_id, cp.is_active,
             p.name AS package_name, p.class_count,
             c.course_id, c.name AS course_name,
             rt.name AS robot_type_name,
@@ -22,8 +22,8 @@ router.get('/', roleGuard(['owner', 'staff']), async (req, res) => {
      LEFT JOIN robot_types rt ON c.robot_type_id = rt.robot_type_id
      LEFT JOIN package_redemptions pr ON cp.customer_package_id = pr.customer_package_id
      WHERE cp.student_id = $1 ${activeClause}
-     GROUP BY cp.customer_package_id, cp.is_active, cp.created_at, p.name, p.class_count, c.course_id, c.name, rt.name
-     ORDER BY cp.is_active DESC, cp.created_at DESC`,
+     GROUP BY cp.customer_package_id, cp.is_active, p.name, p.class_count, c.course_id, c.name, rt.name
+     ORDER BY cp.is_active DESC, cp.customer_package_id DESC`,
     [student_id]
   );
   res.json(rows);

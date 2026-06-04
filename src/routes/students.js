@@ -223,7 +223,7 @@ router.get('/:id', async (req, res) => {
      LEFT JOIN package_redemptions pr ON cp.customer_package_id = pr.customer_package_id
      WHERE cp.student_id = $1 AND cp.is_active = true
      GROUP BY cp.customer_package_id, p.name, p.class_count,
-              c.name, cl.name, rt.name`,
+              c.course_id, c.name, cl.name, rt.name`,
     [req.params.id]
   );
 
