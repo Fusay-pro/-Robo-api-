@@ -59,6 +59,7 @@ function createApp() {
   app.use('/customer-packages', require('./routes/customerPackages'));
   app.use('/announcements',    require('./routes/announcements'));
   app.use('/requests',         require('./routes/requests'));
+  app.use('/admin/sync',       require('./routes/sync'));
 
   // Global error handler
   app.use((err, req, res, next) => {
