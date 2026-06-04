@@ -209,8 +209,9 @@ router.get('/:id', async (req, res) => {
   // Active packages with classes remaining + course + level + robot type
   const { rows: packages } = await query(
     `SELECT cp.customer_package_id, cp.student_id,
-            p.name AS package_name, p.class_count,
-            (p.class_count - COUNT(pr.redemption_id)::int) AS classes_remaining,
+            COALESCE(cp.custom_name, p.name) AS package_name,
+            COALESCE(cp.custom_class_count, p.class_count) AS class_count,
+            (COALESCE(cp.custom_class_count, p.class_count) - COUNT(pr.redemption_id)::int) AS classes_remaining,
             c.course_id,
             c.name AS course_name,
             cl.name AS level_name,
@@ -223,6 +224,7 @@ router.get('/:id', async (req, res) => {
      LEFT JOIN package_redemptions pr ON cp.customer_package_id = pr.customer_package_id
      WHERE cp.student_id = $1 AND cp.is_active = true
      GROUP BY cp.customer_package_id, p.name, p.class_count,
+              cp.custom_name, cp.custom_class_count,
               c.course_id, c.name, cl.name, rt.name`,
     [req.params.id]
   );
