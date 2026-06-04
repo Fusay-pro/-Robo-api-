@@ -53,12 +53,8 @@ function createApp() {
   app.use('/attendance',       require('./routes/attendance'));
   app.use('/reinstatements',   require('./routes/reinstatements'));
   app.use('/transactions',     require('./routes/transactions'));
-  app.use('/expenses',         require('./routes/expenses'));
-  app.use('/contracts',        require('./routes/contracts'));
-  app.use('/warnings',         require('./routes/warnings'));
   app.use('/dashboard',        require('./routes/dashboard'));
   app.use('/holidays',         require('./routes/holidays'));
-  app.use('/messages',         require('./routes/messages'));
   app.use('/customer-packages', require('./routes/customerPackages'));
   app.use('/announcements',    require('./routes/announcements'));
   app.use('/requests',         require('./routes/requests'));
