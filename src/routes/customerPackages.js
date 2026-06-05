@@ -59,21 +59,34 @@ router.patch('/:id',
   }
 );
 
-// POST /customer-packages — assign a catalog package to a student
+// POST /customer-packages — create ad-hoc package and assign to student
 router.post('/',
   roleGuard(['owner']),
   validate(z.object({
-    student_id: z.number().int(),
-    package_id: z.number().int(),
+    student_id:  z.number().int(),
+    course_id:   z.number().int(),
+    class_count: z.number().int().positive(),
+    price:       z.number().min(0),
+    name:        z.string().optional(),
   })),
   async (req, res) => {
-    const { student_id, package_id } = req.body;
-    const { rows } = await query(
+    const { student_id, course_id, class_count, price, name } = req.body;
+    const { rows: [course] } = await query(
+      'SELECT name FROM courses WHERE course_id = $1',
+      [course_id]
+    );
+    if (!course) return res.status(404).json({ error: 'Course not found' });
+    const { rows: [pkg] } = await query(
+      `INSERT INTO packages (course_id, name, class_count, price)
+       VALUES ($1, $2, $3, $4) RETURNING package_id`,
+      [course_id, name || course.name, class_count, price]
+    );
+    const { rows: [cp] } = await query(
       `INSERT INTO customer_packages (student_id, package_id, is_active)
        VALUES ($1, $2, true) RETURNING *`,
-      [student_id, package_id]
+      [student_id, pkg.package_id]
     );
-    res.status(201).json(rows[0]);
+    res.status(201).json(cp);
   }
 );
 
