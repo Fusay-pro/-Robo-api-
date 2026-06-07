@@ -10,7 +10,7 @@ router.get('/:scheduleId', async (req, res) => {
             s.student_id, s.name, s.nickname, s.pre_existing_conditions,
             a.status AS attendance_status, a.attendance_id, a.notes AS attendance_notes,
             p.name AS package_name,
-            (SELECT COALESCE(SUM(p2.class_count - used.cnt), 0)::int
+            (SELECT COALESCE(SUM(COALESCE(cp2.custom_class_count, p2.class_count) - used.cnt), 0)::int
              FROM customer_packages cp2
              JOIN packages p2 ON cp2.package_id = p2.package_id
              LEFT JOIN (

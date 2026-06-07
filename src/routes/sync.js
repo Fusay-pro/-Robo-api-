@@ -53,4 +53,60 @@ router.post('/pull/execute',
   }
 );
 
+// GET /admin/sync/sheets — current sheet URLs for this branch
+router.get('/sheets', roleGuard(['owner', 'super_owner']), async (req, res) => {
+  const { rows: [branch] } = await query(
+    'SELECT sheets_operational_id, sheets_finance_id FROM branches WHERE branch_id = $1',
+    [req.user.branch_id]
+  );
+  res.json({
+    sheets_operational_id: branch?.sheets_operational_id ?? null,
+    sheets_finance_id:     branch?.sheets_finance_id     ?? null,
+  });
+});
+
+// PATCH /admin/sync/sheets — update sheet URLs (password required)
+router.patch('/sheets',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({
+    sheets_operational_id: z.string().nullable().optional(),
+    sheets_finance_id:     z.string().nullable().optional(),
+    password:              z.string().min(1),
+  })),
+  async (req, res) => {
+    const { sheets_operational_id, sheets_finance_id, password } = req.body;
+
+    const { rows: [user] } = await query(
+      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
+      [req.user.user_id]
+    );
+    if (!user?.password_hash)
+      return res.status(403).json({ error: 'Password verification not available for this account' });
+
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
+
+    const sets = [];
+    const vals = [];
+    let idx = 1;
+    if ('sheets_operational_id' in req.body) {
+      sets.push(`sheets_operational_id = $${idx++}`);
+      vals.push(sheets_operational_id ?? null);
+    }
+    if ('sheets_finance_id' in req.body) {
+      sets.push(`sheets_finance_id = $${idx++}`);
+      vals.push(sheets_finance_id ?? null);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    vals.push(req.user.branch_id);
+    const { rows: [branch] } = await query(
+      `UPDATE branches SET ${sets.join(', ')} WHERE branch_id = $${idx}
+       RETURNING sheets_operational_id, sheets_finance_id`,
+      vals
+    );
+    res.json(branch);
+  }
+);
+
 module.exports = router;

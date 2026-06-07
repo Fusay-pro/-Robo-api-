@@ -110,7 +110,7 @@ router.post('/register',
     if (existing.rows.length) return conflict(res, 'Email already registered');
     const password_hash = await bcrypt.hash(password, 10);
     await query(
-      `INSERT INTO users (role, name, email, phone, line_id, password_hash, branch_id, consent_given_at, created_at)
+      `INSERT INTO users (role, name, email, phone, line_user_id, password_hash, branch_id, consent_given_at, created_at)
        VALUES ('parent', $1, $2, $3, $4, $5, $6, NOW(), NOW())
        ON CONFLICT (email) DO NOTHING`,
       [name, email, phone, line_id || null, password_hash, branch_id]

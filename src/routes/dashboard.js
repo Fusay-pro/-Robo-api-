@@ -83,4 +83,25 @@ router.get('/profit', roleGuard(['owner', 'super_owner']), async (req, res) => {
   });
 });
 
+// GET /owner/stats — quick summary cards on the dashboard
+router.get('/stats', roleGuard(['owner', 'super_owner']), async (req, res) => {
+  const { rows: [students] } = await query(
+    `SELECT COUNT(*)::int AS total_students
+     FROM students WHERE branch_id = $1 AND deleted_at IS NULL`,
+    [req.user.branch_id]
+  );
+  const { rows: [revenue] } = await query(
+    `SELECT COALESCE(SUM(amount) FILTER (WHERE status = 'confirmed'), 0) AS revenue_this_month
+     FROM transactions
+     WHERE branch_id = $1
+       AND created_at >= date_trunc('month', CURRENT_DATE)
+       AND created_at <  date_trunc('month', CURRENT_DATE) + interval '1 month'`,
+    [req.user.branch_id]
+  );
+  res.json({
+    total_students:    students.total_students,
+    revenue_this_month: Number(revenue.revenue_this_month),
+  });
+});
+
 module.exports = router;

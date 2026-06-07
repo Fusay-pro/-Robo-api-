@@ -6,7 +6,7 @@ const { validate } = require('../middleware/validate');
 // GET /my/profile — enriched with branch info
 router.get('/profile', async (req, res) => {
   const { rows } = await query(
-    `SELECT u.user_id, u.name, u.phone, u.email, u.consent_given_at,
+    `SELECT u.user_id, u.name, u.phone, u.email, u.line_user_id, u.consent_given_at,
             b.branch_id, b.name AS branch_name,
             b.address AS branch_address, b.phone AS branch_phone
      FROM users u
@@ -22,18 +22,20 @@ router.patch('/profile',
   validate(z.object({
     name:             z.string().min(1).optional(),
     phone:            z.string().optional(),
+    line_user_id:     z.string().max(100).optional(),
     consent_given_at: z.string().datetime().optional(),
   })),
   async (req, res) => {
-    const { name, phone, consent_given_at } = req.body;
+    const { name, phone, line_user_id, consent_given_at } = req.body;
     const { rows } = await query(
       `UPDATE users SET
          name             = COALESCE($1, name),
          phone            = COALESCE($2, phone),
-         consent_given_at = COALESCE($3::timestamptz, consent_given_at)
-       WHERE user_id = $4
-       RETURNING user_id, name, phone, consent_given_at`,
-      [name, phone, consent_given_at, req.user.user_id]
+         line_user_id     = COALESCE($3, line_user_id),
+         consent_given_at = COALESCE($4::timestamptz, consent_given_at)
+       WHERE user_id = $5
+       RETURNING user_id, name, phone, line_user_id, consent_given_at`,
+      [name, phone, line_user_id, consent_given_at, req.user.user_id]
     );
     res.json(rows[0]);
   }
@@ -46,15 +48,15 @@ router.get('/children', async (req, res) => {
             COALESCE(EXTRACT(YEAR FROM AGE(s.date_of_birth))::int, s.age) AS age,
             cp.customer_package_id,
             p.name AS package_name,
-            p.class_count,
-            (p.class_count - COUNT(pr.redemption_id)::int) AS classes_remaining
+            COALESCE(cp.custom_class_count, p.class_count) AS class_count,
+            (COALESCE(cp.custom_class_count, p.class_count) - COUNT(pr.redemption_id)::int) AS classes_remaining
      FROM students s
      LEFT JOIN branches b ON s.branch_id = b.branch_id
      LEFT JOIN customer_packages cp ON cp.student_id = s.student_id AND cp.is_active = true
      LEFT JOIN packages p ON cp.package_id = p.package_id
      LEFT JOIN package_redemptions pr ON pr.customer_package_id = cp.customer_package_id
      WHERE s.parent_user_id = $1 AND s.deleted_at IS NULL
-     GROUP BY s.student_id, b.name, cp.customer_package_id, p.name, p.class_count
+     GROUP BY s.student_id, b.name, cp.customer_package_id, p.name, p.class_count, cp.custom_class_count
      ORDER BY s.name`,
     [req.user.user_id]
   );
@@ -107,14 +109,14 @@ router.get('/children', async (req, res) => {
 // GET /my/packages
 router.get('/packages', async (req, res) => {
   const { rows } = await query(
-    `SELECT cp.*, p.class_count, p.name AS package_name,
-       (p.class_count - COUNT(pr.redemption_id)::int) AS classes_remaining
+    `SELECT cp.*, COALESCE(cp.custom_class_count, p.class_count) AS class_count, p.name AS package_name,
+       (COALESCE(cp.custom_class_count, p.class_count) - COUNT(pr.redemption_id)::int) AS classes_remaining
      FROM customer_packages cp
      JOIN packages p ON cp.package_id = p.package_id
      JOIN students s ON cp.student_id = s.student_id
      LEFT JOIN package_redemptions pr ON cp.customer_package_id = pr.customer_package_id
      WHERE s.parent_user_id = $1 AND cp.is_active = true
-     GROUP BY cp.customer_package_id, p.class_count, p.name`,
+     GROUP BY cp.customer_package_id, p.class_count, cp.custom_class_count, p.name`,
     [req.user.user_id]
   );
   res.json(rows);
@@ -172,8 +174,8 @@ router.get('/children/:student_id', async (req, res) => {
             s.approval_status, s.created_at, s.date_of_birth,
             COALESCE(EXTRACT(YEAR FROM AGE(s.date_of_birth))::int, s.age) AS age,
             b.name AS branch_name,
-            COALESCE(SUM(p.class_count), 0)::int AS class_count,
-            COALESCE(SUM(p.class_count - COALESCE(used.cnt, 0)), 0)::int AS classes_remaining,
+            COALESCE(SUM(COALESCE(cp.custom_class_count, p.class_count)), 0)::int AS class_count,
+            COALESCE(SUM(COALESCE(cp.custom_class_count, p.class_count) - COALESCE(used.cnt, 0)), 0)::int AS classes_remaining,
             COUNT(DISTINCT cp.customer_package_id)::int AS active_package_count,
             (CASE
                WHEN COUNT(DISTINCT cp.customer_package_id) = 1 THEN MAX(p.name)
@@ -344,7 +346,7 @@ router.get('/alerts', async (req, res) => {
   const { rows } = await query(
     `WITH child_remaining AS (
        SELECT s.student_id, s.name AS student_name, s.branch_id,
-              COALESCE(SUM(p.class_count - used.cnt), 0)::int AS classes_remaining,
+              COALESCE(SUM(COALESCE(cp.custom_class_count, p.class_count) - used.cnt), 0)::int AS classes_remaining,
               BOOL_OR(cp.is_active) AS has_active
        FROM students s
        LEFT JOIN customer_packages cp ON cp.student_id = s.student_id AND cp.is_active = true

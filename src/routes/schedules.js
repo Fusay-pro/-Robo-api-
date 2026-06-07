@@ -116,7 +116,7 @@ router.get('/alerts', async (req, res) => {
        st.student_id, st.name AS student_name,
        s.schedule_id, s.starts_at,
        COALESCE(c.name, cs.name, 'Session') AS session_name,
-       (SELECT COALESCE(SUM(p2.class_count - used.cnt), 0)::int
+       (SELECT COALESCE(SUM(COALESCE(cp2.custom_class_count, p2.class_count) - used.cnt), 0)::int
         FROM customer_packages cp2
         JOIN packages p2 ON cp2.package_id = p2.package_id
         LEFT JOIN (

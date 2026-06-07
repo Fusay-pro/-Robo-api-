@@ -95,11 +95,15 @@ router.patch('/:id',
     if (status === 'approved') {
       await query(
         `DELETE FROM package_redemptions WHERE redemption_id = (
-           SELECT redemption_id FROM package_redemptions
-           WHERE customer_package_id = $1
-           ORDER BY created_at DESC LIMIT 1
+           SELECT pr.redemption_id FROM package_redemptions pr
+           JOIN enrollments e ON e.enrollment_id = pr.enrollment_id
+           WHERE pr.customer_package_id = $1
+             AND e.enrollment_id = (
+               SELECT enrollment_id FROM attendance WHERE attendance_id = $2
+             )
+           LIMIT 1
          )`,
-        [rr.customer_package_id]
+        [rr.customer_package_id, rr.attendance_id]
       );
     }
     const { rows: [student] } = await query('SELECT * FROM students WHERE student_id = $1', [rr.student_id]);

@@ -55,6 +55,7 @@ function createApp() {
   app.use('/transactions',     require('./routes/transactions'));
   app.use('/warnings',         require('./routes/warnings'));
   app.use('/dashboard',        require('./routes/dashboard'));
+  app.use('/owner',            require('./routes/dashboard'));
   app.use('/holidays',         require('./routes/holidays'));
   app.use('/customer-packages', require('./routes/customerPackages'));
   app.use('/announcements',    require('./routes/announcements'));

@@ -10,7 +10,7 @@ async function runWarningCron() {
     `SELECT
        s.student_id, s.branch_id, s.parent_user_id, s.name AS student_name,
        b.low_credit_threshold,
-       SUM(p.class_count - COALESCE(used.cnt, 0))::int AS remaining
+       SUM(COALESCE(cp.custom_class_count, p.class_count) - COALESCE(used.cnt, 0))::int AS remaining
      FROM students s
      JOIN branches b ON b.branch_id = s.branch_id
      JOIN customer_packages cp ON cp.student_id = s.student_id AND cp.is_active = true
@@ -22,8 +22,8 @@ async function runWarningCron() {
      ) used ON used.customer_package_id = cp.customer_package_id
      WHERE s.deleted_at IS NULL
      GROUP BY s.student_id, s.branch_id, s.parent_user_id, s.name, b.low_credit_threshold
-     HAVING SUM(p.class_count - COALESCE(used.cnt, 0)) <= b.low_credit_threshold
-        AND SUM(p.class_count - COALESCE(used.cnt, 0)) >= 0`
+     HAVING SUM(COALESCE(cp.custom_class_count, p.class_count) - COALESCE(used.cnt, 0)) <= b.low_credit_threshold
+        AND SUM(COALESCE(cp.custom_class_count, p.class_count) - COALESCE(used.cnt, 0)) >= 0`
   );
 
   for (const row of rows) {

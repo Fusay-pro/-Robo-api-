@@ -18,7 +18,7 @@ async function createEnrollment({ studentId, scheduleId, packageId, parentUserId
       const err = new Error('Session is full'); err.status = 400; throw err;
     }
 
-    const remaining = await getClassesRemaining(studentId);
+    const remaining = await getClassesRemaining(studentId, client);
     const pkg = remaining.find(r => r.customer_package_id === Number(packageId));
     if (!pkg || pkg.remaining <= 0) {
       await client.query('ROLLBACK');

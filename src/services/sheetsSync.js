@@ -11,11 +11,25 @@ function getSheetsClient() {
     credentials: key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
-  const sheets = google.sheets({ version: 'v4', auth });
+  return google.sheets({ version: 'v4', auth });
+}
+
+// Extract spreadsheet ID from a full URL or return the value as-is if it's already an ID.
+function extractSheetId(urlOrId) {
+  if (!urlOrId) return null;
+  const m = urlOrId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : urlOrId;
+}
+
+// Per-branch sheet IDs — DB values take priority over env vars.
+async function getBranchSheetIds(branchId) {
+  const { rows: [branch] } = await query(
+    'SELECT sheets_operational_id, sheets_finance_id FROM branches WHERE branch_id = $1',
+    [branchId]
+  );
   return {
-    sheets,
-    operationalId: process.env.GOOGLE_SHEETS_OPERATIONAL_ID,
-    financeId:     process.env.GOOGLE_SHEETS_FINANCE_ID || process.env.GOOGLE_SHEETS_ID,
+    operationalId: extractSheetId(branch?.sheets_operational_id) || process.env.GOOGLE_SHEETS_OPERATIONAL_ID,
+    financeId:     extractSheetId(branch?.sheets_finance_id)     || process.env.GOOGLE_SHEETS_FINANCE_ID || process.env.GOOGLE_SHEETS_ID,
   };
 }
 
@@ -48,11 +62,11 @@ async function syncSheets(month) {
   const monthStart  = `${targetMonth}-01`;
 
   const { rows: branches } = await query('SELECT * FROM branches WHERE deleted_at IS NULL');
-  const client = getSheetsClient();
-  if (!client) { console.log('Sheets sync: no service account key configured'); return; }
-  const { sheets, financeId: spreadsheetId } = client;
+  const sheets = getSheetsClient();
+  if (!sheets) { console.log('Sheets sync: no service account key configured'); return; }
 
   for (const branch of branches) {
+    const { financeId: spreadsheetId } = await getBranchSheetIds(branch.branch_id);
     try {
       const { rows: [rev] } = await query(
         `SELECT
@@ -110,10 +124,10 @@ async function syncSheets(month) {
 // ─── Operational sync (push DB → sheets) ─────────────────────────────────────
 
 async function pushOperationalSync(branchId, triggeredBy = 'cron') {
-  const client = getSheetsClient();
-  if (!client) throw new Error('Google service account not configured');
-  const { sheets, operationalId, financeId } = client;
-  if (!operationalId) throw new Error('GOOGLE_SHEETS_OPERATIONAL_ID not set');
+  const sheets = getSheetsClient();
+  if (!sheets) throw new Error('Google service account not configured');
+  const { operationalId, financeId } = await getBranchSheetIds(branchId);
+  if (!operationalId) throw new Error('No operational sheet configured for this branch');
 
   const rowsWritten = {};
 
@@ -268,10 +282,10 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
 // ─── Pull: preview diff (sheets → DB) ────────────────────────────────────────
 
 async function previewPull(branchId) {
-  const client = getSheetsClient();
-  if (!client) throw new Error('Google service account not configured');
-  const { sheets, operationalId, financeId } = client;
-  if (!operationalId) throw new Error('GOOGLE_SHEETS_OPERATIONAL_ID not set');
+  const sheets = getSheetsClient();
+  if (!sheets) throw new Error('Google service account not configured');
+  const { operationalId, financeId } = await getBranchSheetIds(branchId);
+  if (!operationalId) throw new Error('No operational sheet configured for this branch');
 
   const diff = {
     students:     { updated: [] },

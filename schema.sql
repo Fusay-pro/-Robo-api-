@@ -10,12 +10,15 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- BRANCHES
 -- ============================================================
 CREATE TABLE branches (
-  branch_id          serial PRIMARY KEY,
-  name               text NOT NULL,
-  address            text,
-  phone              text,
-  capacity_per_teacher int NOT NULL DEFAULT 10,
-  deleted_at         timestamptz
+  branch_id             serial PRIMARY KEY,
+  name                  text NOT NULL,
+  address               text,
+  phone                 text,
+  capacity_per_teacher  int NOT NULL DEFAULT 10,
+  low_credit_threshold  int NOT NULL DEFAULT 3,
+  sheets_operational_id text,
+  sheets_finance_id     text,
+  deleted_at            timestamptz
 );
 
 -- ============================================================
@@ -53,7 +56,7 @@ CREATE TABLE device_tokens (
   token_id           serial PRIMARY KEY,
   user_id            int NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   fcm_token          text NOT NULL,
-  platform           text NOT NULL CHECK (platform IN ('ios','android')),
+  platform           text NOT NULL CHECK (platform IN ('ios','android','web')),
   created_at         timestamptz DEFAULT NOW(),
   UNIQUE (user_id, fcm_token)
 );
@@ -143,16 +146,37 @@ CREATE TABLE schedules (
   schedule_type      text NOT NULL DEFAULT 'branch'
                        CHECK (schedule_type IN ('branch','contract_school')),
   contract_school_id int REFERENCES contract_schools(contract_school_id),
-  starts_at          timestamptz NOT NULL,
-  ends_at            timestamptz NOT NULL,
-  max_capacity       int NOT NULL DEFAULT 10,
-  deleted_at         timestamptz,
+  starts_at                timestamptz NOT NULL,
+  ends_at                  timestamptz NOT NULL,
+  max_capacity             int NOT NULL DEFAULT 10,
+  notes                    text,
+  cancelled_at             timestamptz,
+  cancelled_by_holiday_id  int,
+  deleted_at               timestamptz,
   CHECK (
     (schedule_type = 'branch' AND contract_school_id IS NULL)
     OR
     (schedule_type = 'contract_school' AND contract_school_id IS NOT NULL)
   )
 );
+
+-- ============================================================
+-- HOLIDAYS  (branch closures — cancel sessions in range)
+-- ============================================================
+CREATE TABLE holidays (
+  holiday_id  serial PRIMARY KEY,
+  branch_id   int NOT NULL REFERENCES branches(branch_id) ON DELETE CASCADE,
+  name        text NOT NULL,
+  start_date  date NOT NULL,
+  end_date    date NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT NOW(),
+  CONSTRAINT holidays_dates_check CHECK (end_date >= start_date)
+);
+
+-- FK from schedules to holidays (defined here since holidays comes after schedules)
+ALTER TABLE schedules
+  ADD CONSTRAINT schedules_cancelled_by_holiday_fkey
+  FOREIGN KEY (cancelled_by_holiday_id) REFERENCES holidays(holiday_id);
 
 -- ============================================================
 -- STUDENTS  (children — parents manage these accounts)
@@ -164,6 +188,7 @@ CREATE TABLE students (
   name                    text NOT NULL,
   nickname                text,
   age                     int,
+  date_of_birth           date,
   pre_existing_conditions text,               -- medical/physical info for staff
   approval_status         text NOT NULL DEFAULT 'pending'
                             CHECK (approval_status IN ('pending','approved','rejected')),
@@ -181,7 +206,9 @@ CREATE TABLE customer_packages (
   student_id           int NOT NULL REFERENCES students(student_id),
   package_id           int NOT NULL REFERENCES packages(package_id),
   purchased_at         timestamptz DEFAULT NOW(),
-  is_active            boolean NOT NULL DEFAULT true
+  is_active            boolean NOT NULL DEFAULT true,
+  custom_name          text,
+  custom_class_count   int
 );
 
 -- Each confirmed enrollment redeems one class from a package
@@ -203,6 +230,7 @@ CREATE TABLE enrollments (
   status               text NOT NULL DEFAULT 'pending'
                          CHECK (status IN ('pending','confirmed','cancelled')),
   low_class_warning    boolean NOT NULL DEFAULT false,
+  booking_note         text,
   created_at           timestamptz DEFAULT NOW(),
   deleted_at           timestamptz
 );
@@ -350,7 +378,10 @@ CREATE TABLE sheets_sync_log (
   log_id               serial PRIMARY KEY,
   branch_id            int NOT NULL REFERENCES branches(branch_id),
   sync_month           date NOT NULL,         -- always first of month, e.g. 2026-04-01
+  sync_type            text NOT NULL DEFAULT 'finance' CHECK (sync_type IN ('finance','operational')),
+  triggered_by         text NOT NULL DEFAULT 'cron',
   status               text NOT NULL CHECK (status IN ('success','failed')),
+  rows_written         int,
   error_message        text,
   synced_at            timestamptz DEFAULT NOW()
 );

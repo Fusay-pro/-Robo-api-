@@ -15,7 +15,7 @@ router.get('/stats', async (req, res) => {
   const { rows: [r] } = await query(
     `WITH remaining AS (
        SELECT s.student_id,
-              COALESCE(SUM(p.class_count - used.cnt), 0)::int AS classes_left,
+              COALESCE(SUM(COALESCE(cp.custom_class_count, p.class_count) - used.cnt), 0)::int AS classes_left,
               BOOL_OR(cp.is_active) AS has_active
        FROM students s
        LEFT JOIN customer_packages cp ON cp.student_id = s.student_id AND cp.is_active = true
@@ -44,7 +44,7 @@ router.get('/', async (req, res) => {
   const search = (req.query.search || '').trim();
 
   const classesRemainingSubquery = `
-    (SELECT COALESCE(SUM(p.class_count - used.cnt), 0)::int
+    (SELECT COALESCE(SUM(COALESCE(cp.custom_class_count, p.class_count) - used.cnt), 0)::int
      FROM customer_packages cp
      JOIN packages p ON cp.package_id = p.package_id
      LEFT JOIN (
