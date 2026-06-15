@@ -4,6 +4,17 @@ const { query } = require('../config/db');
 // Falls back to the global pool when called outside a transaction.
 async function getClassesRemaining(studentId, client) {
   const run = client ? (sql, p) => client.query(sql, p) : query;
+  // Lock the active package rows first when inside a transaction — `FOR UPDATE`
+  // can't be combined with the GROUP BY aggregate below, so it's a separate
+  // statement that still prevents concurrent redemption double-spend.
+  if (client) {
+    await run(
+      `SELECT customer_package_id FROM customer_packages
+       WHERE student_id = $1 AND is_active = true
+       FOR UPDATE`,
+      [studentId]
+    );
+  }
   const { rows } = await run(
     `SELECT
        cp.customer_package_id,
@@ -14,8 +25,7 @@ async function getClassesRemaining(studentId, client) {
      JOIN packages p ON cp.package_id = p.package_id
      LEFT JOIN package_redemptions pr ON cp.customer_package_id = pr.customer_package_id
      WHERE cp.student_id = $1 AND cp.is_active = true
-     GROUP BY cp.customer_package_id, p.class_count, cp.custom_class_count
-     FOR UPDATE OF cp`,
+     GROUP BY cp.customer_package_id, p.class_count, cp.custom_class_count`,
     [studentId]
   );
   return rows;

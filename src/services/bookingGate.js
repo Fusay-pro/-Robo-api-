@@ -3,7 +3,7 @@ const { getClassesRemaining } = require('./classesRemaining');
 const { checkCapacity } = require('./capacityCheck');
 const { sendToUser } = require('./pushNotify');
 
-async function createEnrollment({ studentId, scheduleId, packageId, parentUserId, bookingNote }) {
+async function createEnrollment({ studentId, scheduleId, packageId, parentUserId, bookingNote, force = false }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -13,7 +13,9 @@ async function createEnrollment({ studentId, scheduleId, packageId, parentUserId
       await client.query('ROLLBACK');
       const err = new Error('Schedule not found'); err.status = 404; throw err;
     }
-    if (capacity.spots_left <= 0) {
+    // `force` lets an owner overfill a session past max_capacity (capacity is the
+    // only check it bypasses — classes-remaining below is still enforced).
+    if (!force && capacity.spots_left <= 0) {
       await client.query('ROLLBACK');
       const err = new Error('Session is full'); err.status = 400; throw err;
     }

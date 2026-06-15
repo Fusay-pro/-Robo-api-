@@ -72,6 +72,7 @@ router.post('/',
     schedule_id:         z.number().int(),
     customer_package_id: z.number().int(),
     booking_note:        z.string().max(500).optional(),
+    force:               z.boolean().default(false),
   })),
   async (req, res) => {
     try {
@@ -100,12 +101,16 @@ router.post('/',
       );
       if (dup) return res.status(409).json({ error: 'Already booked for this session' });
 
+      // Only owners/staff may overfill a session; parents can never bypass capacity.
+      const force = req.body.force && req.user.role !== 'parent';
+
       const enrollment = await createEnrollment({
         studentId:    req.body.student_id,
         scheduleId:   req.body.schedule_id,
         packageId:    req.body.customer_package_id,
         parentUserId: req.user.role === 'parent' ? req.user.user_id : null,
         bookingNote:  req.body.booking_note,
+        force,
       });
       res.status(201).json(enrollment);
     } catch (err) {
