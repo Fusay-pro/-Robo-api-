@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { z } = require('zod');
-const { query } = require('../config/db');
+const { query, pool } = require('../config/db');
 const { validate } = require('../middleware/validate');
 const { roleGuard } = require('../middleware/roleGuard');
 const { notFound, conflict } = require('../utils/errors');
@@ -16,6 +16,33 @@ async function checkTeacherConflict(teacherId, scheduleId, startsAt, endsAt) {
     [teacherId, scheduleId || 0, startsAt, endsAt]
   );
   return rows.length > 0;
+}
+
+// Resolve the capacity for a session: explicit value → course's robot-type
+// quantity → branch default → 10. Shared by single and bulk create.
+async function resolveCapacity(branchId, courseId, maxCapacity) {
+  if (maxCapacity) return maxCapacity;
+  if (courseId) {
+    const { rows } = await query(
+      `SELECT rt.quantity FROM courses c
+       LEFT JOIN robot_types rt ON c.robot_type_id = rt.robot_type_id
+       WHERE c.course_id = $1`,
+      [courseId]
+    );
+    if (rows[0]?.quantity) return rows[0].quantity;
+  }
+  const { rows } = await query('SELECT capacity_per_teacher FROM branches WHERE branch_id = $1', [branchId]);
+  return rows[0]?.capacity_per_teacher || 10;
+}
+
+// Insert one schedule row. `exec` is either the pool `query` or a transaction
+// client's `query`, so this works inside or outside a transaction.
+function insertSchedule(exec, branchId, s) {
+  return exec(
+    `INSERT INTO schedules (branch_id, course_id, teacher_user_id, schedule_type, contract_school_id, starts_at, ends_at, max_capacity, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [branchId, s.course_id, s.teacher_user_id, s.schedule_type, s.contract_school_id, s.starts_at, s.ends_at, s.max_capacity, s.notes ?? null]
+  ).then(r => r.rows[0]);
 }
 
 // GET /schedules/activity — bookings + hotspots + top kids (owner/staff)
@@ -289,7 +316,7 @@ router.get('/:id', async (req, res) => {
 });
 
 router.post('/',
-  roleGuard(['owner']),
+  roleGuard(['owner', 'super_owner']),
   validate(z.object({
     course_id:          z.number().int().optional(),
     teacher_user_id:    z.number().int().optional(),
@@ -307,35 +334,80 @@ router.post('/',
       const hasConflict = await checkTeacherConflict(teacher_user_id, null, starts_at, ends_at);
       if (hasConflict) return conflict(res, 'Teacher already assigned to another session at this time. Pass force:true to override.');
     }
-    let cap = max_capacity;
-    if (!cap) {
-      // Default to the robot type quantity for the chosen course.
-      // Falls back to branch capacity if course/robot_type not set (e.g. contract school visit).
-      if (fields.course_id) {
-        const { rows } = await query(
-          `SELECT rt.quantity FROM courses c
-           LEFT JOIN robot_types rt ON c.robot_type_id = rt.robot_type_id
-           WHERE c.course_id = $1`,
-          [fields.course_id]
-        );
-        cap = rows[0]?.quantity;
+    const cap = await resolveCapacity(req.user.branch_id, fields.course_id, max_capacity);
+    const row = await insertSchedule(query, req.user.branch_id, {
+      ...fields, teacher_user_id, starts_at, ends_at, max_capacity: cap, notes,
+    });
+    res.status(201).json(row);
+  }
+);
+
+// POST /schedules/bulk — create many sessions in one atomic transaction.
+// Shared fields apply to every session; `sessions` carries the per-date times.
+router.post('/bulk',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({
+    course_id:          z.number().int().optional(),
+    teacher_user_id:    z.number().int().optional(),
+    schedule_type:      z.enum(['branch', 'contract_school']).default('branch'),
+    contract_school_id: z.number().int().optional(),
+    max_capacity:       z.number().int().positive().optional(),
+    notes:              z.string().max(1000).optional(),
+    force:              z.boolean().default(false),
+    sessions: z.array(z.object({
+      starts_at: z.string(),
+      ends_at:   z.string(),
+    })).min(1).max(500),
+  })),
+  async (req, res) => {
+    const {
+      course_id, teacher_user_id, schedule_type, contract_school_id,
+      max_capacity, notes, force, sessions,
+    } = req.body;
+
+    if (teacher_user_id && !force) {
+      // Reject overlaps *within* this payload (two new sessions clashing),
+      // not just against existing DB rows. Sorted-by-start, an overlap exists
+      // iff some session starts before its predecessor ends.
+      const ordered = [...sessions].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+      for (let i = 1; i < ordered.length; i++) {
+        if (ordered[i].starts_at < ordered[i - 1].ends_at) {
+          return conflict(res, `Two sessions in this request overlap for the same teacher at ${ordered[i].starts_at}.`);
+        }
       }
-      if (!cap) {
-        const { rows } = await query('SELECT capacity_per_teacher FROM branches WHERE branch_id = $1', [req.user.branch_id]);
-        cap = rows[0]?.capacity_per_teacher || 10;
+      // Then check each requested session against existing DB schedules.
+      for (const s of sessions) {
+        const hasConflict = await checkTeacherConflict(teacher_user_id, null, s.starts_at, s.ends_at);
+        if (hasConflict) return conflict(res, `Teacher already assigned to another session at ${s.starts_at}. Pass force:true to override.`);
       }
     }
-    const { rows } = await query(
-      `INSERT INTO schedules (branch_id, course_id, teacher_user_id, schedule_type, contract_school_id, starts_at, ends_at, max_capacity, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [req.user.branch_id, fields.course_id, teacher_user_id, fields.schedule_type, fields.contract_school_id, starts_at, ends_at, cap, notes ?? null]
-    );
-    res.status(201).json(rows[0]);
+
+    // Resolve default capacity once — it's shared across all sessions.
+    const cap = await resolveCapacity(req.user.branch_id, course_id, max_capacity);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const created = [];
+      for (const s of sessions) {
+        created.push(await insertSchedule(client.query.bind(client), req.user.branch_id, {
+          course_id, teacher_user_id, schedule_type, contract_school_id,
+          starts_at: s.starts_at, ends_at: s.ends_at, max_capacity: cap, notes,
+        }));
+      }
+      await client.query('COMMIT');
+      res.status(201).json({ created: created.length, schedules: created });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 );
 
 router.patch('/:id',
-  roleGuard(['owner']),
+  roleGuard(['owner', 'super_owner']),
   validate(z.object({
     teacher_user_id: z.number().int().optional(),
     max_capacity:    z.number().int().positive().optional(),
@@ -397,7 +469,7 @@ router.patch('/:id',
   }
 );
 
-router.delete('/:id', roleGuard(['owner']), async (req, res) => {
+router.delete('/:id', roleGuard(['owner', 'super_owner']), async (req, res) => {
   await query('UPDATE schedules SET deleted_at = NOW() WHERE schedule_id = $1', [req.params.id]);
   res.status(204).send();
 });
