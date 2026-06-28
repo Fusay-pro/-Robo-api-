@@ -63,19 +63,27 @@ router.patch('/:id',
 router.post('/',
   roleGuard(['owner']),
   validate(z.object({
-    student_id:  z.number().int(),
-    course_id:   z.number().int(),
-    class_count: z.number().int().positive(),
-    price:       z.number().min(0),
-    name:        z.string().optional(),
+    student_id:     z.number().int(),
+    course_id:      z.number().int(),
+    class_count:    z.number().int().positive(),
+    price:          z.number().min(0),
+    name:           z.string().optional(),
+    payment_method: z.enum(['cash', 'transfer']),
   })),
   async (req, res) => {
-    const { student_id, course_id, class_count, price, name } = req.body;
+    const { student_id, course_id, class_count, price, name, payment_method } = req.body;
     const { rows: [course] } = await query(
       'SELECT name FROM courses WHERE course_id = $1',
       [course_id]
     );
     if (!course) return res.status(404).json({ error: 'Course not found' });
+
+    const { rows: [student] } = await query(
+      'SELECT branch_id FROM students WHERE student_id = $1 AND deleted_at IS NULL',
+      [student_id]
+    );
+    if (!student) return res.status(404).json({ error: 'Student not found' });
+
     const { rows: [pkg] } = await query(
       `INSERT INTO packages (course_id, name, class_count, price)
        VALUES ($1, $2, $3, $4) RETURNING package_id`,
@@ -85,6 +93,11 @@ router.post('/',
       `INSERT INTO customer_packages (student_id, package_id, is_active)
        VALUES ($1, $2, true) RETURNING *`,
       [student_id, pkg.package_id]
+    );
+    await query(
+      `INSERT INTO transactions (branch_id, student_id, customer_package_id, amount, payment_method, status, confirmed_by_user_id, confirmed_at)
+       VALUES ($1, $2, $3, $4, $5, 'confirmed', $6, NOW())`,
+      [student.branch_id, student_id, cp.customer_package_id, price, payment_method, req.user.user_id]
     );
     res.status(201).json(cp);
   }
