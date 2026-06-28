@@ -125,10 +125,11 @@ router.post('/',
     date_of_birth:           z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     pre_existing_conditions: z.string().optional(),
     branch_id:               z.number().int(),
+    parent_user_id:          z.number().int().optional(),
   })),
   async (req, res) => {
-    const { name, nickname, age, date_of_birth, pre_existing_conditions, branch_id } = req.body;
-    const parentId = req.user.role === 'parent' ? req.user.user_id : null;
+    const { name, nickname, age, date_of_birth, pre_existing_conditions, branch_id, parent_user_id } = req.body;
+    const parentId = req.user.role === 'parent' ? req.user.user_id : (parent_user_id ?? null);
     // If DOB given but no explicit age, derive age from DOB for the static column
     let computedAge = age;
     if (!computedAge && date_of_birth) {
