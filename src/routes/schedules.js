@@ -366,43 +366,47 @@ router.post('/bulk',
     } = req.body;
 
     if (teacher_user_id && !force) {
-      // Reject overlaps *within* this payload (two new sessions clashing),
-      // not just against existing DB rows. Sorted-by-start, an overlap exists
-      // iff some session starts before its predecessor ends.
+      // Reject overlaps within this payload first (sort by start, check adjacent).
       const ordered = [...sessions].sort((a, b) => a.starts_at.localeCompare(b.starts_at));
       for (let i = 1; i < ordered.length; i++) {
         if (ordered[i].starts_at < ordered[i - 1].ends_at) {
           return conflict(res, `Two sessions in this request overlap for the same teacher at ${ordered[i].starts_at}.`);
         }
       }
-      // Then check each requested session against existing DB schedules.
-      for (const s of sessions) {
-        const hasConflict = await checkTeacherConflict(teacher_user_id, null, s.starts_at, s.ends_at);
-        if (hasConflict) return conflict(res, `Teacher already assigned to another session at ${s.starts_at}. Pass force:true to override.`);
+      // Single query checks all requested slots against existing DB rows at once.
+      const starts = sessions.map(s => s.starts_at);
+      const ends   = sessions.map(s => s.ends_at);
+      const { rows: clashes } = await query(
+        `SELECT s.starts_at AS clash_at
+         FROM schedules s
+         JOIN UNNEST($1::timestamptz[], $2::timestamptz[]) AS t(t_start, t_end)
+           ON (s.starts_at, s.ends_at) OVERLAPS (t.t_start, t.t_end)
+         WHERE s.teacher_user_id = $3 AND s.deleted_at IS NULL
+         LIMIT 1`,
+        [starts, ends, teacher_user_id]
+      );
+      if (clashes.length) {
+        return conflict(res, `Teacher already assigned to another session at ${clashes[0].clash_at}. Pass force:true to override.`);
       }
     }
 
     // Resolve default capacity once — it's shared across all sessions.
     const cap = await resolveCapacity(req.user.branch_id, course_id, max_capacity);
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const created = [];
-      for (const s of sessions) {
-        created.push(await insertSchedule(client.query.bind(client), req.user.branch_id, {
-          course_id, teacher_user_id, schedule_type, contract_school_id,
-          starts_at: s.starts_at, ends_at: s.ends_at, max_capacity: cap, notes,
-        }));
-      }
-      await client.query('COMMIT');
-      res.status(201).json({ created: created.length, schedules: created });
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    // Single bulk INSERT for all sessions in one round trip.
+    const starts = sessions.map(s => s.starts_at);
+    const ends   = sessions.map(s => s.ends_at);
+    const { rows: created } = await query(
+      `INSERT INTO schedules
+         (branch_id, course_id, teacher_user_id, schedule_type, contract_school_id, starts_at, ends_at, max_capacity, notes)
+       SELECT $1, $2, $3, $4, $5, t.starts_at, t.ends_at, $6, $7
+       FROM UNNEST($8::timestamptz[], $9::timestamptz[]) AS t(starts_at, ends_at)
+       RETURNING *`,
+      [req.user.branch_id, course_id ?? null, teacher_user_id ?? null,
+       schedule_type, contract_school_id ?? null, cap, notes ?? null,
+       starts, ends]
+    );
+    res.status(201).json({ created: created.length, schedules: created });
   }
 );
 
