@@ -78,7 +78,7 @@ router.get('/', async (req, res) => {
 
     if (search) {
       params.push(`%${search}%`);
-      conditions.push(`(s.name ILIKE $${params.length} OR s.nickname ILIKE $${params.length})`);
+      conditions.push(`(s.name ILIKE $${params.length} OR s.nickname ILIKE $${params.length} OR u.name ILIKE $${params.length})`);
     }
 
     const approvalStatus = (req.query.approval_status || '').trim();
@@ -110,7 +110,7 @@ router.get('/', async (req, res) => {
       [...params, limit, offset]
     ));
     ({ rows: [{ count }] } = await query(
-      `SELECT COUNT(*) FROM students s WHERE ${where}`,
+      `SELECT COUNT(*) FROM students s LEFT JOIN users u ON s.parent_user_id = u.user_id WHERE ${where}`,
       params
     ));
   }
