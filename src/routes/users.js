@@ -68,6 +68,18 @@ router.post('/',
   }
 );
 
+router.get('/parents', roleGuard(['owner', 'staff']), async (req, res) => {
+  const search = (req.query.search || '').trim();
+  const { rows } = await query(
+    `SELECT user_id, name, email, phone FROM users
+     WHERE role = 'parent' AND deleted_at IS NULL
+       AND ($1 = '' OR name ILIKE $2 OR email ILIKE $2)
+     ORDER BY name LIMIT 30`,
+    [search, `%${search}%`]
+  );
+  res.json({ data: rows });
+});
+
 router.patch('/:id',
   roleGuard(['owner']),
   validate(z.object({
