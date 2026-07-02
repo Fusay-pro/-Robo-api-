@@ -58,11 +58,19 @@ router.post('/',
   async (req, res) => {
     const { password, ...fields } = req.body;
     const hash = await bcrypt.hash(password, 10);
+    let user_code = null;
+    if (fields.role === 'parent') {
+      const { rows: [{ next_num }] } = await query(
+        `SELECT COALESCE(MAX(CAST(SUBSTRING(user_code FROM 5) AS INT)), 0) + 1 AS next_num
+         FROM users WHERE user_code LIKE 'RCP-%'`
+      );
+      user_code = `RCP-${String(next_num).padStart(4, '0')}`;
+    }
     const { rows } = await query(
-      `INSERT INTO users (branch_id, role, name, email, password_hash, phone, monthly_salary, active_from, active_until)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING user_id, branch_id, role, name, email, phone`,
+      `INSERT INTO users (branch_id, role, name, email, password_hash, phone, monthly_salary, active_from, active_until, user_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING user_id, branch_id, role, name, email, phone, user_code`,
       [req.user.branch_id, fields.role, fields.name, fields.email, hash, fields.phone,
-       fields.monthly_salary, fields.active_from, fields.active_until]
+       fields.monthly_salary, fields.active_from, fields.active_until, user_code]
     );
     res.status(201).json(rows[0]);
   }

@@ -136,10 +136,15 @@ router.post('/',
       const dob = new Date(date_of_birth + 'T00:00:00');
       computedAge = Math.floor((Date.now() - dob.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
     }
+    const { rows: [{ next_num }] } = await query(
+      `SELECT COALESCE(MAX(CAST(SUBSTRING(student_code FROM 5) AS INT)), 0) + 1 AS next_num
+       FROM students WHERE student_code LIKE 'RCC-%'`
+    );
+    const student_code = `RCC-${String(next_num).padStart(4, '0')}`;
     const { rows } = await query(
-      `INSERT INTO students (parent_user_id, branch_id, name, nickname, age, date_of_birth, pre_existing_conditions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [parentId, branch_id, name, nickname, computedAge, date_of_birth || null, pre_existing_conditions]
+      `INSERT INTO students (parent_user_id, branch_id, name, nickname, age, date_of_birth, pre_existing_conditions, student_code)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [parentId, branch_id, name, nickname, computedAge, date_of_birth || null, pre_existing_conditions, student_code]
     );
     await sendToRole(branch_id, 'staff',  { title: 'New student pending', body: `${name} is waiting for confirmation.` });
     await sendToRole(branch_id, 'owner',  { title: 'New student pending', body: `${name} is waiting for confirmation.` });
@@ -199,7 +204,7 @@ router.post('/import',
 // GET /students/:id — full detail: student + active packages + most recent enrollment
 router.get('/:id', async (req, res) => {
   const { rows: [student] } = await query(
-    `SELECT s.*, u.name AS parent_name, u.phone AS parent_phone
+    `SELECT s.*, u.name AS parent_name, u.phone AS parent_phone, u.email AS parent_email, u.user_code AS parent_code
      FROM students s
      LEFT JOIN users u ON s.parent_user_id = u.user_id
      WHERE s.student_id = $1 AND s.deleted_at IS NULL`,

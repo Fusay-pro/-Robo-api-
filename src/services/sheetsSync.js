@@ -536,6 +536,7 @@ async function importStudentsFromSheet(branchId, userId) {
     return idx >= 0 ? idx : null;
   }
 
+  const iCode   = col(['รหัสประจำตัว']);
   const iName   = col(['ชื่อ - สกุล (ไทย)', 'ชื่อ - สกุล', 'ชื่อ-สกุล (ไทย)']);
   const iNick   = col(['ชื่อเล่น']);
   const iDob    = col(['วัน เดือน ปี เกิด', 'วันเกิด']);
@@ -593,14 +594,25 @@ async function importStudentsFromSheet(branchId, userId) {
       );
       if (existing) { result.skipped++; continue; }
 
-      const nickname = iNick !== null ? (row[iNick] || '').trim() || null : null;
-      const dob      = iDob  !== null ? parseThaiDate(row[iDob]) : null;
-      const age      = iAge  !== null ? parseThaiAge(row[iAge])  : null;
+      const nickname    = iNick !== null ? (row[iNick] || '').trim() || null : null;
+      const dob         = iDob  !== null ? parseThaiDate(row[iDob]) : null;
+      const age         = iAge  !== null ? parseThaiAge(row[iAge])  : null;
+      const sheetCode   = iCode !== null ? (row[iCode] || '').trim() || null : null;
+
+      // Use sheet code if present, otherwise auto-generate next RCC-XXXX
+      let student_code = sheetCode;
+      if (!student_code) {
+        const { rows: [{ next_num }] } = await query(
+          `SELECT COALESCE(MAX(CAST(SUBSTRING(student_code FROM 5) AS INT)), 0) + 1 AS next_num
+           FROM students WHERE student_code LIKE 'RCC-%'`
+        );
+        student_code = `RCC-${String(next_num).padStart(4, '0')}`;
+      }
 
       const { rows: [student] } = await query(
-        `INSERT INTO students (branch_id, name, nickname, date_of_birth, age, approval_status)
-         VALUES ($1, $2, $3, $4, $5, 'approved') RETURNING student_id`,
-        [branchId, name, nickname, dob, age]
+        `INSERT INTO students (branch_id, name, nickname, date_of_birth, age, approval_status, student_code)
+         VALUES ($1, $2, $3, $4, $5, 'approved', $6) RETURNING student_id`,
+        [branchId, name, nickname, dob, age, student_code]
       );
 
       // Package / class balance
