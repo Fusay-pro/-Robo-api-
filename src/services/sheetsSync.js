@@ -477,4 +477,235 @@ cron.schedule('0 6 * * *', async () => {
   }
 });
 
-module.exports = { syncSheets, pushOperationalSync, previewPull, executePull };
+// ─── Helpers for registration sheet import ────────────────────────────────────
+
+function parseThaiDate(str) {
+  if (!str) return null;
+  const s = String(str).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/);
+  if (m) {
+    let year = parseInt(m[3]);
+    if (year > 2400) year -= 543;
+    return `${year}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
+  return null;
+}
+
+function parseThaiAge(str) {
+  const m = String(str || '').match(/(\d+)\s*ปี/);
+  return m ? parseInt(m[1]) : null;
+}
+
+function parseBalance(str) {
+  const n = parseInt(String(str || '').replace(/[^0-9]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+
+// Scan all sheet tabs and return the title of the first one whose header row
+// contains a recognisable Thai registration column.
+async function findRegistrationTab(sheets, spreadsheetId) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const titles = meta.data.sheets.map(s => s.properties.title);
+  for (const title of titles) {
+    const rows = await readTab(sheets, spreadsheetId, title);
+    if (rows.length && rows[0].some(h => h && (h.includes('ชื่อ - สกุล') || h.includes('คอร์สเรียน') || h.includes('ชื่อเล่น')))) {
+      return { title, rows };
+    }
+  }
+  return null;
+}
+
+// ─── Import: registration sheet → DB ─────────────────────────────────────────
+
+async function importStudentsFromSheet(branchId, userId) {
+  const sheets = getSheetsClient();
+  if (!sheets) throw new Error('Google service account not configured');
+  const { operationalId } = await getBranchSheetIds(branchId);
+  if (!operationalId) throw new Error('No operational sheet configured for this branch');
+
+  const found = await findRegistrationTab(sheets, operationalId);
+  if (!found) throw new Error('Could not find a student registration tab in the configured sheet');
+
+  const { rows } = found;
+  const header = rows[0];
+
+  // Build column index map — match by keyword substrings
+  function col(keywords) {
+    const idx = header.findIndex(h => h && keywords.some(k => h.includes(k)));
+    return idx >= 0 ? idx : null;
+  }
+
+  const iName   = col(['ชื่อ - สกุล (ไทย)', 'ชื่อ - สกุล', 'ชื่อ-สกุล (ไทย)']);
+  const iNick   = col(['ชื่อเล่น']);
+  const iDob    = col(['วัน เดือน ปี เกิด', 'วันเกิด']);
+  const iAge    = col(['อายุ']);
+  const iCourse = col(['คอร์สเรียน', 'คอร์ส']);
+  const iBal    = col(['คงเหลือ']);
+  const iParent = col(['ชื่อ-สกุล (ผู้ปกครอง)', 'ชื่อ - สกุล (ผู้ปกครอง)', 'ผู้ปกครอง']);
+  const iPhone  = col(['เบอร์มือถือ', 'เบอร์โทร']);
+
+  if (iName === null) throw new Error('Could not find student name column in sheet');
+
+  // Cache: course name → { course_id, package_id }
+  const courseCache = {};
+  async function getOrCreateCourse(name) {
+    if (!name) return null;
+    const key = name.trim();
+    if (courseCache[key]) return courseCache[key];
+    let { rows: [course] } = await query(
+      'SELECT course_id FROM courses WHERE name = $1 AND branch_id = $2 AND deleted_at IS NULL',
+      [key, branchId]
+    );
+    if (!course) {
+      const { rows: [c] } = await query(
+        'INSERT INTO courses (branch_id, name) VALUES ($1, $2) RETURNING course_id',
+        [branchId, key]
+      );
+      course = c;
+    }
+    let { rows: [pkg] } = await query(
+      'SELECT package_id FROM packages WHERE course_id = $1 AND deleted_at IS NULL LIMIT 1',
+      [course.course_id]
+    );
+    if (!pkg) {
+      const { rows: [p] } = await query(
+        'INSERT INTO packages (course_id, name, class_count, price) VALUES ($1, $2, 1, 0) RETURNING package_id',
+        [course.course_id, 'Imported']
+      );
+      pkg = p;
+    }
+    courseCache[key] = { course_id: course.course_id, package_id: pkg.package_id };
+    return courseCache[key];
+  }
+
+  const result = { imported: 0, skipped: 0, errors: [] };
+
+  for (const row of rows.slice(1)) {
+    const name = (row[iName] || '').trim();
+    if (!name) { result.skipped++; continue; }
+
+    try {
+      // Skip duplicates
+      const { rows: [existing] } = await query(
+        'SELECT student_id FROM students WHERE name = $1 AND branch_id = $2 AND deleted_at IS NULL',
+        [name, branchId]
+      );
+      if (existing) { result.skipped++; continue; }
+
+      const nickname = iNick !== null ? (row[iNick] || '').trim() || null : null;
+      const dob      = iDob  !== null ? parseThaiDate(row[iDob]) : null;
+      const age      = iAge  !== null ? parseThaiAge(row[iAge])  : null;
+
+      const { rows: [student] } = await query(
+        `INSERT INTO students (branch_id, name, nickname, date_of_birth, age, approval_status)
+         VALUES ($1, $2, $3, $4, $5, 'approved') RETURNING student_id`,
+        [branchId, name, nickname, dob, age]
+      );
+
+      // Package / class balance
+      const courseName = iCourse !== null ? (row[iCourse] || '').trim() : null;
+      const balance    = iBal    !== null ? parseBalance(row[iBal]) : 0;
+      if (courseName && balance > 0) {
+        const course = await getOrCreateCourse(courseName);
+        if (course) {
+          await query(
+            `INSERT INTO customer_packages (student_id, package_id, is_active, custom_class_count)
+             VALUES ($1, $2, true, $3)`,
+            [student.student_id, course.package_id, balance]
+          );
+        }
+      }
+
+      // Store parent info as a note
+      const parentName  = iParent !== null ? (row[iParent] || '').trim() : null;
+      const parentPhone = iPhone  !== null ? (row[iPhone]  || '').trim() : null;
+      if (parentName || parentPhone) {
+        const parts = [];
+        if (parentName)  parts.push(`Parent: ${parentName}`);
+        if (parentPhone) parts.push(`Phone: ${parentPhone}`);
+        await query(
+          'INSERT INTO student_notes (student_id, author_id, body) VALUES ($1, $2, $3)',
+          [student.student_id, userId, parts.join(' · ')]
+        );
+      }
+
+      result.imported++;
+    } catch (err) {
+      result.errors.push(`${name}: ${err.message}`);
+    }
+  }
+
+  return result;
+}
+
+// ─── Full data reset for a branch ────────────────────────────────────────────
+
+async function resetBranchData(branchId) {
+  // Delete in FK dependency order
+  const tables = [
+    'package_redemptions',
+    'reinstatement_requests',
+    'attendance',
+    'enrollments',
+    'schedule_reservations',
+    'customer_warnings',
+    'transactions',
+    'customer_packages',
+    'packages',
+    'courses',
+    'course_levels',
+    'robot_types',
+    'schedules',
+    'student_notes',
+    'students',
+    'contract_school_payments',
+    'contract_school_slots',
+    'contract_schools',
+    'expenses',
+    'announcements',
+    'holidays',
+    'sheets_sync_log',
+  ];
+
+  for (const table of tables) {
+    try {
+      // Most tables have branch_id; some need a subquery join
+      if (['package_redemptions', 'reinstatement_requests', 'attendance', 'enrollments', 'schedule_reservations'].includes(table)) {
+        await query(`DELETE FROM ${table} WHERE schedule_id IN (SELECT schedule_id FROM schedules WHERE branch_id = $1)
+                     OR student_id IN (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
+        if (table === 'package_redemptions') {
+          await query(`DELETE FROM ${table} WHERE customer_package_id IN
+            (SELECT cp.customer_package_id FROM customer_packages cp
+             JOIN students s ON cp.student_id = s.student_id WHERE s.branch_id = $1)`, [branchId]);
+        }
+      } else if (table === 'customer_packages') {
+        await query(`DELETE FROM customer_packages WHERE student_id IN
+          (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
+      } else if (table === 'packages') {
+        await query(`DELETE FROM packages WHERE course_id IN
+          (SELECT course_id FROM courses WHERE branch_id = $1)`, [branchId]);
+      } else if (table === 'student_notes') {
+        await query(`DELETE FROM student_notes WHERE student_id IN
+          (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
+      } else if (table === 'contract_school_payments') {
+        await query(`DELETE FROM contract_school_payments WHERE contract_school_id IN
+          (SELECT contract_school_id FROM contract_schools WHERE branch_id = $1)`, [branchId]);
+      } else if (table === 'contract_school_slots') {
+        await query(`DELETE FROM contract_school_slots WHERE contract_school_id IN
+          (SELECT contract_school_id FROM contract_schools WHERE branch_id = $1)`, [branchId]);
+      } else {
+        await query(`DELETE FROM ${table} WHERE branch_id = $1`, [branchId]);
+      }
+    } catch (_) {
+      // Best-effort: skip tables that don't match the pattern
+    }
+  }
+
+  // Delete parent users for this branch
+  await query(`DELETE FROM users WHERE role = 'parent' AND branch_id = $1`, [branchId]);
+  // Delete staff users for this branch (keep owner)
+  await query(`DELETE FROM users WHERE role = 'staff' AND branch_id = $1`, [branchId]);
+}
+
+module.exports = { syncSheets, pushOperationalSync, previewPull, executePull, importStudentsFromSheet, resetBranchData };

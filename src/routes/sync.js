@@ -4,7 +4,7 @@ const bcrypt  = require('bcrypt');
 const { query }  = require('../config/db');
 const { validate }   = require('../middleware/validate');
 const { roleGuard }  = require('../middleware/roleGuard');
-const { pushOperationalSync, previewPull, executePull } = require('../services/sheetsSync');
+const { pushOperationalSync, previewPull, executePull, importStudentsFromSheet, resetBranchData } = require('../services/sheetsSync');
 
 // GET /admin/sync/status — last successful operational sync for this branch
 router.get('/status', roleGuard(['owner', 'super_owner']), async (req, res) => {
@@ -106,6 +106,35 @@ router.patch('/sheets',
       vals
     );
     res.json(branch);
+  }
+);
+
+// POST /admin/sync/import-students — import from registration sheet into DB
+router.post('/import-students', roleGuard(['owner', 'super_owner']), async (req, res) => {
+  const result = await importStudentsFromSheet(req.user.branch_id, req.user.user_id);
+  res.json(result);
+});
+
+// POST /admin/reset — full data wipe for this branch (password required)
+router.post('/reset',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({
+    password:  z.string().min(1),
+    confirmed: z.literal(true),
+  })),
+  async (req, res) => {
+    const { rows: [user] } = await query(
+      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
+      [req.user.user_id]
+    );
+    if (!user?.password_hash)
+      return res.status(403).json({ error: 'Password verification not available for this account' });
+
+    const ok = await bcrypt.compare(req.body.password, user.password_hash);
+    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
+
+    await resetBranchData(req.user.branch_id);
+    res.json({ ok: true });
   }
 );
 
