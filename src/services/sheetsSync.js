@@ -654,70 +654,59 @@ async function importStudentsFromSheet(branchId, userId) {
 // ─── Full data reset for a branch ────────────────────────────────────────────
 
 async function resetBranchData(branchId) {
-  // Delete in FK dependency order
-  const tables = [
-    'package_redemptions',
-    'reinstatement_requests',
-    'attendance',
-    'enrollments',
-    'schedule_reservations',
-    'customer_warnings',
-    'transactions',
-    'customer_packages',
-    'packages',
-    'courses',
-    'course_levels',
-    'robot_types',
-    'schedules',
-    'student_notes',
-    'students',
-    'contract_school_payments',
-    'contract_school_slots',
-    'contract_schools',
-    'expenses',
-    'announcements',
-    'holidays',
-    'sheets_sync_log',
-  ];
+  const studentIds  = `(SELECT student_id FROM students WHERE branch_id = $1)`;
+  const courseIds   = `(SELECT course_id FROM courses WHERE branch_id = $1)`;
+  const contractIds = `(SELECT contract_school_id FROM contract_schools WHERE branch_id = $1)`;
+  const nonOwnerIds = `(SELECT user_id FROM users WHERE branch_id = $1 AND role != 'owner')`;
 
-  for (const table of tables) {
-    try {
-      // Most tables have branch_id; some need a subquery join
-      if (['package_redemptions', 'reinstatement_requests', 'attendance', 'enrollments', 'schedule_reservations'].includes(table)) {
-        await query(`DELETE FROM ${table} WHERE schedule_id IN (SELECT schedule_id FROM schedules WHERE branch_id = $1)
-                     OR student_id IN (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
-        if (table === 'package_redemptions') {
-          await query(`DELETE FROM ${table} WHERE customer_package_id IN
-            (SELECT cp.customer_package_id FROM customer_packages cp
-             JOIN students s ON cp.student_id = s.student_id WHERE s.branch_id = $1)`, [branchId]);
-        }
-      } else if (table === 'customer_packages') {
-        await query(`DELETE FROM customer_packages WHERE student_id IN
-          (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
-      } else if (table === 'packages') {
-        await query(`DELETE FROM packages WHERE course_id IN
-          (SELECT course_id FROM courses WHERE branch_id = $1)`, [branchId]);
-      } else if (table === 'student_notes') {
-        await query(`DELETE FROM student_notes WHERE student_id IN
-          (SELECT student_id FROM students WHERE branch_id = $1)`, [branchId]);
-      } else if (table === 'contract_school_payments') {
-        await query(`DELETE FROM contract_school_payments WHERE contract_school_id IN
-          (SELECT contract_school_id FROM contract_schools WHERE branch_id = $1)`, [branchId]);
-      } else if (table === 'contract_school_slots') {
-        await query(`DELETE FROM contract_school_slots WHERE contract_school_id IN
-          (SELECT contract_school_id FROM contract_schools WHERE branch_id = $1)`, [branchId]);
-      } else {
-        await query(`DELETE FROM ${table} WHERE branch_id = $1`, [branchId]);
-      }
-    } catch (_) {
-      // Best-effort: skip tables that don't match the pattern
-    }
-  }
+  // Leaf tables first — no other table references these
+  await query(`DELETE FROM device_tokens      WHERE user_id IN ${nonOwnerIds}`, [branchId]);
+  await query(`DELETE FROM refresh_tokens     WHERE user_id IN ${nonOwnerIds}`, [branchId]);
 
-  // Delete parent users for this branch
+  // Community / messaging (reference students or parent users)
+  await query(`DELETE FROM messages  WHERE parent_id IN (SELECT user_id FROM users WHERE branch_id = $1 AND role = 'parent')`, [branchId]);
+  await query(`DELETE FROM requests  WHERE parent_id IN (SELECT user_id FROM users WHERE branch_id = $1 AND role = 'parent')`, [branchId]);
+  await query(`DELETE FROM complaints WHERE student_id IN ${studentIds}`, [branchId]);
+
+  // Package redemptions (reference customer_packages → students)
+  await query(`DELETE FROM package_redemptions WHERE customer_package_id IN
+    (SELECT cp.customer_package_id FROM customer_packages cp
+     JOIN students s ON cp.student_id = s.student_id WHERE s.branch_id = $1)`, [branchId]);
+
+  // Student-linked records
+  await query(`DELETE FROM reinstatement_requests WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM attendance            WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM enrollments           WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM schedule_reservations WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM customer_warnings     WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM transactions          WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM customer_packages     WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM student_notes         WHERE student_id IN ${studentIds}`, [branchId]);
+  await query(`DELETE FROM students              WHERE branch_id = $1`, [branchId]);
+
+  // Course catalog
+  await query(`DELETE FROM packages     WHERE course_id IN ${courseIds}`, [branchId]);
+  await query(`DELETE FROM courses      WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM course_levels WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM robot_types  WHERE branch_id = $1`, [branchId]);
+
+  // Schedules (after enrollments/attendance already gone)
+  await query(`DELETE FROM schedules WHERE branch_id = $1`, [branchId]);
+
+  // Contract schools
+  await query(`DELETE FROM contract_school_payments WHERE contract_school_id IN ${contractIds}`, [branchId]);
+  await query(`DELETE FROM contract_school_slots    WHERE contract_school_id IN ${contractIds}`, [branchId]);
+  await query(`DELETE FROM contract_schools         WHERE branch_id = $1`, [branchId]);
+
+  // Other branch-scoped tables
+  await query(`DELETE FROM expenses        WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM announcements   WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM holidays        WHERE branch_id = $1`, [branchId]);
+  await query(`DELETE FROM sheets_sync_log WHERE branch_id = $1`, [branchId]);
+
+  // Users last (parent + staff, keep owner)
   await query(`DELETE FROM users WHERE role = 'parent' AND branch_id = $1`, [branchId]);
-  // Delete staff users for this branch (keep owner)
-  await query(`DELETE FROM users WHERE role = 'staff' AND branch_id = $1`, [branchId]);
+  await query(`DELETE FROM users WHERE role = 'staff'  AND branch_id = $1`, [branchId]);
 }
 
 module.exports = { syncSheets, pushOperationalSync, previewPull, executePull, importStudentsFromSheet, resetBranchData };
