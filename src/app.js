@@ -8,6 +8,9 @@ const { rlsMiddleware }  = require('./config/rls');
 
 function createApp() {
   const app = express();
+  // Behind a reverse proxy / tunnel (ngrok), so X-Forwarded-For is set.
+  // Trust the first proxy hop so rate-limiting keys on the real client IP.
+  app.set('trust proxy', 1);
 
   app.use(helmet());
   app.use(cors({
