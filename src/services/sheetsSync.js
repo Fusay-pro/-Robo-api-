@@ -543,8 +543,18 @@ async function importStudentsFromSheet(branchId, userId) {
   const iAge    = col(['อายุ']);
   const iCourse = col(['คอร์สเรียน', 'คอร์ส']);
   const iBal    = col(['คงเหลือ']);
-  const iParent = col(['ชื่อ-สกุล (ผู้ปกครอง)', 'ชื่อ - สกุล (ผู้ปกครอง)', 'ผู้ปกครอง']);
   const iPhone  = col(['เบอร์มือถือ', 'เบอร์โทร']);
+  // Existing parent-code column (e.g. รหัสผู้ปกครอง / RCP), if the sheet already has one
+  const iPCode  = (() => {
+    const i = header.findIndex(h => h && (h.includes('รหัสผู้ปกครอง') || /\bRCP\b/i.test(h) || (h.includes('รหัส') && h.includes('ผู้ปกครอง'))));
+    return i >= 0 ? i : null;
+  })();
+  // Parent NAME column. 'รหัสผู้ปกครอง' also contains 'ผู้ปกครอง', so exclude the code column.
+  let iParent = col(['ชื่อ-สกุล (ผู้ปกครอง)', 'ชื่อ - สกุล (ผู้ปกครอง)', 'ผู้ปกครอง']);
+  if (iParent !== null && iParent === iPCode) {
+    const i = header.findIndex((h, idx) => idx !== iPCode && h && h.includes('ผู้ปกครอง') && !h.includes('รหัส'));
+    iParent = i >= 0 ? i : null;
+  }
 
   if (iName === null) throw new Error('Could not find student name column in sheet');
 
@@ -580,46 +590,58 @@ async function importStudentsFromSheet(branchId, userId) {
     return courseCache[key];
   }
 
-  // Cache: normalised parent name → { user_id, user_code }. Matches siblings
-  // to one parent account by their full parent name (whitespace-normalised).
+  // Cache of parents seen this run. Siblings are grouped by the sheet's parent
+  // code when present, otherwise by full parent name (whitespace-normalised).
   const parentCache = {};
+  const createdParents = new Set();
   const normParent = (s) => String(s || '').trim().replace(/\s+/g, ' ');
-  async function getOrCreateParent(rawName, phone) {
-    const key = normParent(rawName);
-    if (!key) return null;
-    if (parentCache[key]) return parentCache[key];
 
-    let { rows: [parent] } = await query(
-      `SELECT user_id, user_code FROM users
-       WHERE role = 'parent' AND branch_id = $1 AND name = $2 AND deleted_at IS NULL
-       LIMIT 1`,
-      [branchId, key]
+  async function nextParentCode() {
+    const { rows: [{ next_num }] } = await query(
+      `SELECT COALESCE(MAX(CAST(SUBSTRING(user_code FROM 5) AS INT)), 0) + 1 AS next_num
+       FROM users WHERE user_code LIKE 'RCP-%'`
     );
+    return `RCP-${String(next_num).padStart(4, '0')}`;
+  }
 
-    // Ensure the parent has an RCP code (generate if new, or backfill if missing)
-    async function nextParentCode() {
-      const { rows: [{ next_num }] } = await query(
-        `SELECT COALESCE(MAX(CAST(SUBSTRING(user_code FROM 5) AS INT)), 0) + 1 AS next_num
-         FROM users WHERE user_code LIKE 'RCP-%'`
-      );
-      return `RCP-${String(next_num).padStart(4, '0')}`;
+  async function getOrCreateParent(rawName, phone, rawCode) {
+    const code     = normParent(rawCode);   // e.g. an RCP-0007 already filled in the sheet
+    const nameKey  = normParent(rawName);
+    const cacheKey = code || nameKey;        // group siblings by code when present, else by name
+    if (!cacheKey) return null;
+    if (parentCache[cacheKey]) return parentCache[cacheKey];
+
+    let parent = null;
+    if (code) {
+      ({ rows: [parent] } = await query(
+        `SELECT user_id, user_code FROM users
+         WHERE role='parent' AND branch_id=$1 AND user_code=$2 AND deleted_at IS NULL LIMIT 1`,
+        [branchId, code]
+      ));
+    }
+    if (!parent && nameKey) {
+      ({ rows: [parent] } = await query(
+        `SELECT user_id, user_code FROM users
+         WHERE role='parent' AND branch_id=$1 AND name=$2 AND deleted_at IS NULL LIMIT 1`,
+        [branchId, nameKey]
+      ));
     }
 
     if (!parent) {
-      const code = await nextParentCode();
+      const finalCode = code || await nextParentCode();
       ({ rows: [parent] } = await query(
         `INSERT INTO users (branch_id, role, name, phone, user_code)
-         VALUES ($1, 'parent', $2, $3, $4)
-         RETURNING user_id, user_code`,
-        [branchId, key, phone || null, code]
+         VALUES ($1, 'parent', $2, $3, $4) RETURNING user_id, user_code`,
+        [branchId, nameKey || code, phone || null, finalCode]
       ));
+      createdParents.add(parent.user_id);
     } else if (!parent.user_code) {
-      const code = await nextParentCode();
-      await query('UPDATE users SET user_code = $1 WHERE user_id = $2', [code, parent.user_id]);
-      parent.user_code = code;
+      const finalCode = code || await nextParentCode();
+      await query('UPDATE users SET user_code=$1 WHERE user_id=$2', [finalCode, parent.user_id]);
+      parent.user_code = finalCode;
     }
 
-    parentCache[key] = parent;
+    parentCache[cacheKey] = parent;
     return parent;
   }
 
@@ -658,12 +680,12 @@ async function importStudentsFromSheet(branchId, userId) {
         student_code = `RCC-${String(next_num).padStart(4, '0')}`;
       }
 
-      // Find-or-create the parent account (RCP code) before the student, so we can link them
+      // Find-or-create the parent account before the student, so we can link them.
+      // Honour a parent code already present in the sheet; otherwise generate one.
       const parentName  = iParent !== null ? (row[iParent] || '').trim() : null;
       const parentPhone = iPhone  !== null ? (row[iPhone]  || '').trim() : null;
-      const wasCached   = parentName ? !!parentCache[normParent(parentName)] : true;
-      const parent      = await getOrCreateParent(parentName, parentPhone);
-      if (parent && !wasCached) result.parents++;
+      const parentCode  = iPCode  !== null ? (row[iPCode]  || '').trim() : null;
+      const parent      = await getOrCreateParent(parentName, parentPhone, parentCode);
       if (parent) parentCodeColumn[ri] = parent.user_code;
 
       const { rows: [student] } = await query(
@@ -700,11 +722,12 @@ async function importStudentsFromSheet(branchId, userId) {
     }
   }
 
-  // Write the RCP codes back to the sheet (adds the column if it doesn't exist)
+  result.parents = createdParents.size;
+
+  // Write the RCP codes back to the sheet (reuses the existing column, or appends one)
   try {
     const toColLetter = (n) => { let s = ''; n++; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
-    let pcIdx = header.findIndex(h => h && (h.includes('รหัสผู้ปกครอง') || h.toUpperCase().includes('RCP')));
-    if (pcIdx < 0) pcIdx = header.length; // append as a new trailing column
+    const pcIdx = iPCode !== null ? iPCode : header.length; // reuse detected column, else append
     const col = toColLetter(pcIdx);
     await sheets.spreadsheets.values.update({
       spreadsheetId: operationalId,
