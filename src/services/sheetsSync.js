@@ -527,7 +527,7 @@ async function importStudentsFromSheet(branchId, userId) {
   const found = await findRegistrationTab(sheets, operationalId);
   if (!found) throw new Error('Could not find a student registration tab in the configured sheet');
 
-  const { rows } = found;
+  const { title: tabTitle, rows } = found;
   const header = rows[0];
 
   // Build column index map — match by keyword substrings
@@ -580,9 +580,58 @@ async function importStudentsFromSheet(branchId, userId) {
     return courseCache[key];
   }
 
-  const result = { imported: 0, skipped: 0, errors: [] };
+  // Cache: normalised parent name → { user_id, user_code }. Matches siblings
+  // to one parent account by their full parent name (whitespace-normalised).
+  const parentCache = {};
+  const normParent = (s) => String(s || '').trim().replace(/\s+/g, ' ');
+  async function getOrCreateParent(rawName, phone) {
+    const key = normParent(rawName);
+    if (!key) return null;
+    if (parentCache[key]) return parentCache[key];
 
-  for (const row of rows.slice(1)) {
+    let { rows: [parent] } = await query(
+      `SELECT user_id, user_code FROM users
+       WHERE role = 'parent' AND branch_id = $1 AND name = $2 AND deleted_at IS NULL
+       LIMIT 1`,
+      [branchId, key]
+    );
+
+    // Ensure the parent has an RCP code (generate if new, or backfill if missing)
+    async function nextParentCode() {
+      const { rows: [{ next_num }] } = await query(
+        `SELECT COALESCE(MAX(CAST(SUBSTRING(user_code FROM 5) AS INT)), 0) + 1 AS next_num
+         FROM users WHERE user_code LIKE 'RCP-%'`
+      );
+      return `RCP-${String(next_num).padStart(4, '0')}`;
+    }
+
+    if (!parent) {
+      const code = await nextParentCode();
+      ({ rows: [parent] } = await query(
+        `INSERT INTO users (branch_id, role, name, phone, user_code)
+         VALUES ($1, 'parent', $2, $3, $4)
+         RETURNING user_id, user_code`,
+        [branchId, key, phone || null, code]
+      ));
+    } else if (!parent.user_code) {
+      const code = await nextParentCode();
+      await query('UPDATE users SET user_code = $1 WHERE user_id = $2', [code, parent.user_id]);
+      parent.user_code = code;
+    }
+
+    parentCache[key] = parent;
+    return parent;
+  }
+
+  const result = { imported: 0, skipped: 0, parents: 0, errors: [] };
+
+  // Column written back to the sheet: index 0 is the header, then one RCP per data row.
+  const PARENT_CODE_HEADER = 'รหัสผู้ปกครอง';
+  const parentCodeColumn = new Array(rows.length).fill('');
+  parentCodeColumn[0] = PARENT_CODE_HEADER;
+
+  for (let ri = 1; ri < rows.length; ri++) {
+    const row = rows[ri];
     const name = (row[iName] || '').trim();
     if (!name) { result.skipped++; continue; }
 
@@ -609,10 +658,18 @@ async function importStudentsFromSheet(branchId, userId) {
         student_code = `RCC-${String(next_num).padStart(4, '0')}`;
       }
 
+      // Find-or-create the parent account (RCP code) before the student, so we can link them
+      const parentName  = iParent !== null ? (row[iParent] || '').trim() : null;
+      const parentPhone = iPhone  !== null ? (row[iPhone]  || '').trim() : null;
+      const wasCached   = parentName ? !!parentCache[normParent(parentName)] : true;
+      const parent      = await getOrCreateParent(parentName, parentPhone);
+      if (parent && !wasCached) result.parents++;
+      if (parent) parentCodeColumn[ri] = parent.user_code;
+
       const { rows: [student] } = await query(
-        `INSERT INTO students (branch_id, name, nickname, date_of_birth, age, approval_status, student_code)
-         VALUES ($1, $2, $3, $4, $5, 'approved', $6) RETURNING student_id`,
-        [branchId, name, nickname, dob, age, student_code]
+        `INSERT INTO students (branch_id, parent_user_id, name, nickname, date_of_birth, age, approval_status, student_code)
+         VALUES ($1, $2, $3, $4, $5, $6, 'approved', $7) RETURNING student_id`,
+        [branchId, parent ? parent.user_id : null, name, nickname, dob, age, student_code]
       );
 
       // Package / class balance
@@ -629,16 +686,11 @@ async function importStudentsFromSheet(branchId, userId) {
         }
       }
 
-      // Store parent info as a note
-      const parentName  = iParent !== null ? (row[iParent] || '').trim() : null;
-      const parentPhone = iPhone  !== null ? (row[iPhone]  || '').trim() : null;
-      if (parentName || parentPhone) {
-        const parts = [];
-        if (parentName)  parts.push(`Parent: ${parentName}`);
-        if (parentPhone) parts.push(`Phone: ${parentPhone}`);
+      // Keep phone-only info (no parent name to key on) as a fallback note
+      if (!parentName && parentPhone) {
         await query(
           'INSERT INTO student_notes (student_id, author_id, body) VALUES ($1, $2, $3)',
-          [student.student_id, userId, parts.join(' · ')]
+          [student.student_id, userId, `Parent phone: ${parentPhone}`]
         );
       }
 
@@ -646,6 +698,24 @@ async function importStudentsFromSheet(branchId, userId) {
     } catch (err) {
       result.errors.push(`${name}: ${err.message}`);
     }
+  }
+
+  // Write the RCP codes back to the sheet (adds the column if it doesn't exist)
+  try {
+    const toColLetter = (n) => { let s = ''; n++; while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); } return s; };
+    let pcIdx = header.findIndex(h => h && (h.includes('รหัสผู้ปกครอง') || h.toUpperCase().includes('RCP')));
+    if (pcIdx < 0) pcIdx = header.length; // append as a new trailing column
+    const col = toColLetter(pcIdx);
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: operationalId,
+      range: `${tabTitle}!${col}1`,
+      valueInputOption: 'RAW',
+      requestBody: { values: parentCodeColumn.map(v => [v]) },
+    });
+    result.sheetUpdated = true;
+  } catch (err) {
+    result.sheetUpdated = false;
+    result.errors.push(`Sheet write-back failed (is the service account an Editor on the sheet?): ${err.message}`);
   }
 
   return result;
