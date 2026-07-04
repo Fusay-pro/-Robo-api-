@@ -502,16 +502,21 @@ function parseBalance(str) {
   return isNaN(n) ? 0 : n;
 }
 
-// Scan all sheet tabs and return the title of the first one whose header row
-// contains a recognisable Thai registration column.
+// A row looks like the registration header if it names student/course/nickname.
+function looksLikeHeaderRow(r) {
+  return Array.isArray(r) && r.some(h => h && (h.includes('ชื่อ - สกุล') || h.includes('คอร์สเรียน') || h.includes('ชื่อเล่น')));
+}
+
+// Scan all sheet tabs and return the first one that has a recognisable Thai
+// registration header — searching the first few rows, since sheets often put a
+// title / column-number row above the real headers.
 async function findRegistrationTab(sheets, spreadsheetId) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
   const titles = meta.data.sheets.map(s => s.properties.title);
   for (const title of titles) {
     const rows = await readTab(sheets, spreadsheetId, title);
-    if (rows.length && rows[0].some(h => h && (h.includes('ชื่อ - สกุล') || h.includes('คอร์สเรียน') || h.includes('ชื่อเล่น')))) {
-      return { title, rows };
-    }
+    const headerRow = rows.findIndex((r, i) => i < 8 && looksLikeHeaderRow(r));
+    if (headerRow >= 0) return { title, rows, headerRow };
   }
   return null;
 }
@@ -527,19 +532,22 @@ async function importStudentsFromSheet(branchId, userId) {
   const found = await findRegistrationTab(sheets, operationalId);
   if (!found) throw new Error('Could not find a student registration tab in the configured sheet');
 
-  const { title: tabTitle, rows } = found;
-  const header = rows[0];
+  const { title: tabTitle, rows, headerRow } = found;
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const header = (rows[headerRow] || []).map(norm);
 
-  // Build column index map — match by keyword substrings
+  // Build column index map — match by keyword substrings (whitespace-insensitive,
+  // so a header like "วัน  เดือน ปี เกิด" with stray double spaces still matches).
   function col(keywords) {
-    const idx = header.findIndex(h => h && keywords.some(k => h.includes(k)));
+    const nk = keywords.map(norm);
+    const idx = header.findIndex(h => h && nk.some(k => h.includes(k)));
     return idx >= 0 ? idx : null;
   }
 
   const iCode   = col(['รหัสประจำตัว']);
   const iName   = col(['ชื่อ - สกุล (ไทย)', 'ชื่อ - สกุล', 'ชื่อ-สกุล (ไทย)']);
   const iNick   = col(['ชื่อเล่น']);
-  const iDob    = col(['วัน เดือน ปี เกิด', 'วันเกิด']);
+  const iDob    = col(['วัน เดือน ปี เกิด', 'วันเกิด', 'เกิด']);
   const iAge    = col(['อายุ']);
   const iCourse = col(['คอร์สเรียน', 'คอร์ส']);
   const iBal    = col(['คงเหลือ']);
@@ -647,13 +655,14 @@ async function importStudentsFromSheet(branchId, userId) {
 
   const result = { imported: 0, skipped: 0, parents: 0, errors: [] };
 
-  // Column written back to the sheet: index 0 is the header, then one RCP per data row.
+  // Column written back to the sheet, aligned to absolute sheet rows: the header
+  // text sits on the detected header row, then one RCP per data row below it.
   const PARENT_CODE_HEADER = 'รหัสผู้ปกครอง';
   const parentCodeColumn = new Array(rows.length).fill('');
-  parentCodeColumn[0] = PARENT_CODE_HEADER;
+  parentCodeColumn[headerRow] = PARENT_CODE_HEADER;
 
-  for (let ri = 1; ri < rows.length; ri++) {
-    const row = rows[ri];
+  for (let ri = headerRow + 1; ri < rows.length; ri++) {
+    const row = rows[ri] || [];
     const name = (row[iName] || '').trim();
     if (!name) { result.skipped++; continue; }
 
