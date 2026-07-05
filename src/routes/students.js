@@ -9,6 +9,24 @@ const { notFound } = require('../utils/errors');
 
 const LIMIT_MAX = 200;
 
+// Load a student and enforce access: parents may only touch their own children;
+// staff/owner are scoped to their branch; super_owner sees all. Sends the
+// 404/403 itself and returns null when access is denied.
+async function loadStudentAuthorized(req, res) {
+  const { rows: [student] } = await query(
+    'SELECT * FROM students WHERE student_id = $1 AND deleted_at IS NULL',
+    [req.params.id]
+  );
+  if (!student) { notFound(res); return null; }
+  const u = req.user;
+  const allowed =
+    u.role === 'parent'      ? student.parent_user_id === u.user_id :
+    u.role === 'super_owner' ? true :
+    student.branch_id === u.branch_id;
+  if (!allowed) { res.status(403).json({ error: 'Forbidden' }); return null; }
+  return student;
+}
+
 // Stats endpoint — must be before /:id
 router.get('/stats', async (req, res) => {
   if (req.user.role === 'parent') return res.json({ total: 0, with_active_package: 0, low_classes: 0 });
@@ -68,8 +86,10 @@ router.get('/', async (req, res) => {
        ORDER BY s.name LIMIT $2 OFFSET $3`,
       params
     ));
+    // Count query has different parameter positions than the list query above
+    const countSearchClause = search ? `AND (s.name ILIKE $2 OR s.nickname ILIKE $2)` : '';
     ({ rows: [{ count }] } = await query(
-      `SELECT COUNT(*) FROM students s WHERE parent_user_id = $1 AND deleted_at IS NULL ${searchClause}`,
+      `SELECT COUNT(*) FROM students s WHERE parent_user_id = $1 AND deleted_at IS NULL ${countSearchClause}`,
       search ? [req.user.user_id, `%${search}%`] : [req.user.user_id]
     ));
   } else {
@@ -128,7 +148,10 @@ router.post('/',
     parent_user_id:          z.number().int().optional(),
   })),
   async (req, res) => {
-    const { name, nickname, age, date_of_birth, pre_existing_conditions, branch_id, parent_user_id } = req.body;
+    const { name, nickname, age, date_of_birth, pre_existing_conditions, parent_user_id } = req.body;
+    // Parents register into the branch they chose; staff/owner always create in their own branch
+    const branch_id = req.user.role === 'parent' || req.user.role === 'super_owner'
+      ? req.body.branch_id : req.user.branch_id;
     const parentId = req.user.role === 'parent' ? req.user.user_id : (parent_user_id ?? null);
     // If DOB given but no explicit age, derive age from DOB for the static column
     let computedAge = age;
@@ -203,6 +226,8 @@ router.post('/import',
 
 // GET /students/:id — full detail: student + active packages + most recent enrollment
 router.get('/:id', async (req, res) => {
+  const authorized = await loadStudentAuthorized(req, res);
+  if (!authorized) return;
   const { rows: [student] } = await query(
     `SELECT s.*, u.name AS parent_name, u.phone AS parent_phone, u.email AS parent_email, u.user_code AS parent_code
      FROM students s
@@ -252,8 +277,10 @@ router.get('/:id', async (req, res) => {
   res.json({ ...student, packages, latestEnrollment: latestEnrollment ?? null });
 });
 
-// GET /students/:id/notes
-router.get('/:id/notes', async (req, res) => {
+// GET /students/:id/notes — internal staff notes, never visible to parents
+router.get('/:id/notes', roleGuard(['owner', 'staff', 'super_owner']), async (req, res) => {
+  const student = await loadStudentAuthorized(req, res);
+  if (!student) return;
   const { rows } = await query(
     `SELECT n.*, u.name AS author_name
      FROM student_notes n
@@ -265,10 +292,13 @@ router.get('/:id/notes', async (req, res) => {
   res.json(rows);
 });
 
-// POST /students/:id/notes
+// POST /students/:id/notes — staff/owner only
 router.post('/:id/notes',
+  roleGuard(['owner', 'staff', 'super_owner']),
   validate(z.object({ body: z.string().min(1) })),
   async (req, res) => {
+    const student = await loadStudentAuthorized(req, res);
+    if (!student) return;
     const { rows: [note] } = await query(
       `INSERT INTO student_notes (student_id, author_id, body)
        VALUES ($1, $2, $3)
@@ -294,6 +324,8 @@ router.patch('/:id',
     pre_existing_conditions: z.string().optional(),
   })),
   async (req, res) => {
+    const student = await loadStudentAuthorized(req, res);
+    if (!student) return;
     const { name, nickname, age, pre_existing_conditions } = req.body;
     const { rows } = await query(
       `UPDATE students SET

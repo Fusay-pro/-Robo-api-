@@ -18,10 +18,21 @@ async function query(text, params) {
 async function withRLS({ role, branchId, userId }, fn) {
   const client = await pool.connect();
   try {
-    await client.query(`SET LOCAL app.role = '${role}'`);
-    await client.query(`SET LOCAL app.branch_id = '${branchId ?? 0}'`);
-    await client.query(`SET LOCAL app.user_id = '${userId ?? 0}'`);
-    return await fn(client);
+    // SET LOCAL only takes effect inside a transaction, and set_config()
+    // parameterizes the values (no string interpolation into SQL).
+    await client.query('BEGIN');
+    await client.query(
+      `SELECT set_config('app.role', $1, true),
+              set_config('app.branch_id', $2, true),
+              set_config('app.user_id', $3, true)`,
+      [String(role), String(branchId ?? 0), String(userId ?? 0)]
+    );
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
   } finally {
     client.release();
   }

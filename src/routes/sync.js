@@ -18,16 +18,24 @@ router.get('/status', roleGuard(['owner', 'super_owner']), async (req, res) => {
   res.json(rows[0] ?? null);
 });
 
+// Sheet-sync failures are operational (bad config, sheet not shared, …) — surface
+// the message to the owner UI as a 400 instead of a masked 500.
+const syncError = (res, err) => res.status(400).json({ error: err.message });
+
 // POST /admin/sync/push — manually push DB → Sheets
 router.post('/push', roleGuard(['owner', 'super_owner']), async (req, res) => {
-  const result = await pushOperationalSync(req.user.branch_id, 'manual');
-  res.json(result);
+  try {
+    const result = await pushOperationalSync(req.user.branch_id, 'manual');
+    res.json(result);
+  } catch (err) { syncError(res, err); }
 });
 
 // POST /admin/sync/pull/preview — show what would change
 router.post('/pull/preview', roleGuard(['owner', 'super_owner']), async (req, res) => {
-  const diff = await previewPull(req.user.branch_id);
-  res.json(diff);
+  try {
+    const diff = await previewPull(req.user.branch_id);
+    res.json(diff);
+  } catch (err) { syncError(res, err); }
 });
 
 // POST /admin/sync/pull/execute — apply changes after password confirm
@@ -48,8 +56,10 @@ router.post('/pull/execute',
     const ok = await bcrypt.compare(req.body.password, user.password_hash);
     if (!ok) return res.status(403).json({ error: 'Incorrect password' });
 
-    const result = await executePull(req.user.branch_id, req.user.user_id);
-    res.json(result);
+    try {
+      const result = await executePull(req.user.branch_id, req.user.user_id);
+      res.json(result);
+    } catch (err) { syncError(res, err); }
   }
 );
 
@@ -111,8 +121,10 @@ router.patch('/sheets',
 
 // POST /admin/sync/import-students — import from registration sheet into DB
 router.post('/import-students', roleGuard(['owner', 'super_owner']), async (req, res) => {
-  const result = await importStudentsFromSheet(req.user.branch_id, req.user.user_id);
-  res.json(result);
+  try {
+    const result = await importStudentsFromSheet(req.user.branch_id, req.user.user_id);
+    res.json(result);
+  } catch (err) { syncError(res, err); }
 });
 
 // POST /admin/reset — full data wipe for this branch (password required)
@@ -133,8 +145,10 @@ router.post('/reset',
     const ok = await bcrypt.compare(req.body.password, user.password_hash);
     if (!ok) return res.status(403).json({ error: 'Incorrect password' });
 
-    await resetBranchData(req.user.branch_id);
-    res.json({ ok: true });
+    try {
+      await resetBranchData(req.user.branch_id);
+      res.json({ ok: true });
+    } catch (err) { syncError(res, err); }
   }
 );
 

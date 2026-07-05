@@ -31,6 +31,8 @@ async function createRefreshToken(userId) {
   const raw  = crypto.randomBytes(40).toString('hex');
   const hash = hashRefreshToken(raw);
   const exp  = new Date(Date.now() + REFRESH_EXPIRES_MS);
+  // Opportunistic cleanup so expired tokens don't accumulate forever
+  await query('DELETE FROM refresh_tokens WHERE user_id = $1 AND expires_at < NOW()', [userId]);
   await query(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)',
     [userId, hash, exp]
@@ -115,8 +117,8 @@ router.post('/register',
        ON CONFLICT (email) DO NOTHING`,
       [name, email, phone, line_id || null, password_hash, branch_id]
     );
-    // Generate 4-digit OTP valid for 10 minutes
-    const code = String(Math.floor(1000 + Math.random() * 9000));
+    // Generate 4-digit OTP valid for 10 minutes (CSPRNG — Math.random is predictable)
+    const code = String(crypto.randomInt(1000, 10000));
     const expires_at = new Date(Date.now() + 10 * 60 * 1000);
     await query('UPDATE otp_verifications SET used = true WHERE email = $1', [email]);
     await query(

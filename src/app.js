@@ -18,9 +18,13 @@ function createApp() {
     credentials: true,
   }));
 
-  // Rate limiting
-  app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false }));
-  app.use('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false }));
+  // Rate limiting. Staff dashboards fire many API calls and a whole school can
+  // share one IP (school WiFi / ngrok), so the global limit must be generous.
+  app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000, standardHeaders: true, legacyHeaders: false }));
+  // /auth covers login AND refresh (every session refreshes ~4x/hour) — keyed per IP
+  app.use('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false }));
+  // Login brute-force protection, separate from refresh traffic
+  app.use('/auth/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false }));
   // Stricter limit for OTP verification — 5 attempts per 15 min to prevent brute-force
   app.use('/auth/verify-otp', rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false }));
 
@@ -65,10 +69,13 @@ function createApp() {
   app.use('/requests',         require('./routes/requests'));
   app.use('/admin/sync',       require('./routes/sync'));
 
-  // Global error handler
+  // Global error handler — log details server-side, but never leak internals
+  // (SQL errors, stack fragments) to clients on unexpected 500s.
   app.use((err, req, res, next) => {
     console.error(err.stack || err.message);
-    res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+    const status = err.status || 500;
+    const message = status < 500 ? (err.message || 'Request failed') : 'Internal server error';
+    res.status(status).json({ error: message });
   });
 
   return app;
