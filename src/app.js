@@ -13,8 +13,25 @@ function createApp() {
   app.set('trust proxy', 1);
 
   app.use(helmet());
+  // Allowed browser origins: localhost (dev), the configured app URLs, and this
+  // account's Vercel deployments — production aliases (robo-staff/robo-parent)
+  // plus the auto-generated preview/branch URLs (which change every deploy).
+  const staticOrigins = [
+    process.env.PARENT_APP_URL, process.env.STAFF_APP_URL,
+    'https://robo-staff.vercel.app', 'https://robo-parent.vercel.app',
+  ].filter(Boolean);
   app.use(cors({
-    origin: [process.env.PARENT_APP_URL, process.env.STAFF_APP_URL].filter(Boolean),
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);                        // curl / mobile / server-to-server
+      if (staticOrigins.includes(origin)) return cb(null, true);
+      if (/^http:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
+      // Vercel deployment/preview URLs owned by this account
+      if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin) &&
+          (origin.includes('fusay-pros-projects') || /robo-(staff|parent)/.test(origin) || origin.includes('pocket-scanner'))) {
+        return cb(null, true);
+      }
+      return cb(null, false);                                    // block: no CORS headers (not a 500)
+    },
     credentials: true,
   }));
 
