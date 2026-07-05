@@ -22,15 +22,34 @@ router.get('/status', roleGuard(['owner', 'super_owner']), async (req, res) => {
 // the message to the owner UI as a 400 instead of a masked 500.
 const syncError = (res, err) => res.status(400).json({ error: err.message });
 
+// Every action here mutates real data (or a live Google Sheet), so each one
+// re-confirms the caller's password — same pattern as Reset/Edit Sheet Links.
+// Returns true and lets the route continue, or sends the 403 itself.
+const passwordSchema = validate(z.object({ password: z.string().min(1), confirmed: z.literal(true) }));
+async function verifyPassword(req, res) {
+  const { rows: [user] } = await query(
+    'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
+    [req.user.user_id]
+  );
+  if (!user?.password_hash) {
+    res.status(403).json({ error: 'Password verification not available for this account' });
+    return false;
+  }
+  const ok = await bcrypt.compare(req.body.password, user.password_hash);
+  if (!ok) { res.status(403).json({ error: 'Incorrect password' }); return false; }
+  return true;
+}
+
 // POST /admin/sync/push — manually push DB → Sheets
-router.post('/push', roleGuard(['owner', 'super_owner']), async (req, res) => {
+router.post('/push', roleGuard(['owner', 'super_owner']), passwordSchema, async (req, res) => {
+  if (!(await verifyPassword(req, res))) return;
   try {
     const result = await pushOperationalSync(req.user.branch_id, 'manual');
     res.json(result);
   } catch (err) { syncError(res, err); }
 });
 
-// POST /admin/sync/pull/preview — show what would change
+// POST /admin/sync/pull/preview — show what would change (read-only, no password needed)
 router.post('/pull/preview', roleGuard(['owner', 'super_owner']), async (req, res) => {
   try {
     const diff = await previewPull(req.user.branch_id);
@@ -39,29 +58,13 @@ router.post('/pull/preview', roleGuard(['owner', 'super_owner']), async (req, re
 });
 
 // POST /admin/sync/pull/execute — apply changes after password confirm
-router.post('/pull/execute',
-  roleGuard(['owner', 'super_owner']),
-  validate(z.object({
-    password:  z.string().min(1),
-    confirmed: z.literal(true),
-  })),
-  async (req, res) => {
-    const { rows: [user] } = await query(
-      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
-      [req.user.user_id]
-    );
-    if (!user?.password_hash)
-      return res.status(403).json({ error: 'Password verification not available for this account' });
-
-    const ok = await bcrypt.compare(req.body.password, user.password_hash);
-    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
-
-    try {
-      const result = await executePull(req.user.branch_id, req.user.user_id);
-      res.json(result);
-    } catch (err) { syncError(res, err); }
-  }
-);
+router.post('/pull/execute', roleGuard(['owner', 'super_owner']), passwordSchema, async (req, res) => {
+  if (!(await verifyPassword(req, res))) return;
+  try {
+    const result = await executePull(req.user.branch_id, req.user.user_id);
+    res.json(result);
+  } catch (err) { syncError(res, err); }
+});
 
 // GET /admin/sync/sheets — current sheet URLs for this branch
 router.get('/sheets', roleGuard(['owner', 'super_owner']), async (req, res) => {
@@ -84,17 +87,8 @@ router.patch('/sheets',
     password:              z.string().min(1),
   })),
   async (req, res) => {
-    const { sheets_operational_id, sheets_finance_id, password } = req.body;
-
-    const { rows: [user] } = await query(
-      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
-      [req.user.user_id]
-    );
-    if (!user?.password_hash)
-      return res.status(403).json({ error: 'Password verification not available for this account' });
-
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
+    if (!(await verifyPassword(req, res))) return;
+    const { sheets_operational_id, sheets_finance_id } = req.body;
 
     const sets = [];
     const vals = [];
@@ -120,7 +114,8 @@ router.patch('/sheets',
 );
 
 // POST /admin/sync/import-students — import from registration sheet into DB
-router.post('/import-students', roleGuard(['owner', 'super_owner']), async (req, res) => {
+router.post('/import-students', roleGuard(['owner', 'super_owner']), passwordSchema, async (req, res) => {
+  if (!(await verifyPassword(req, res))) return;
   try {
     const result = await importStudentsFromSheet(req.user.branch_id, req.user.user_id);
     res.json(result);
@@ -128,28 +123,12 @@ router.post('/import-students', roleGuard(['owner', 'super_owner']), async (req,
 });
 
 // POST /admin/reset — full data wipe for this branch (password required)
-router.post('/reset',
-  roleGuard(['owner', 'super_owner']),
-  validate(z.object({
-    password:  z.string().min(1),
-    confirmed: z.literal(true),
-  })),
-  async (req, res) => {
-    const { rows: [user] } = await query(
-      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
-      [req.user.user_id]
-    );
-    if (!user?.password_hash)
-      return res.status(403).json({ error: 'Password verification not available for this account' });
-
-    const ok = await bcrypt.compare(req.body.password, user.password_hash);
-    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
-
-    try {
-      await resetBranchData(req.user.branch_id);
-      res.json({ ok: true });
-    } catch (err) { syncError(res, err); }
-  }
-);
+router.post('/reset', roleGuard(['owner', 'super_owner']), passwordSchema, async (req, res) => {
+  if (!(await verifyPassword(req, res))) return;
+  try {
+    await resetBranchData(req.user.branch_id);
+    res.json({ ok: true });
+  } catch (err) { syncError(res, err); }
+});
 
 module.exports = router;

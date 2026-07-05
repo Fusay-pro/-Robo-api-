@@ -22,7 +22,7 @@ router.post('/',
       reason_detail:       z.string().min(50, 'reason_detail must be at least 50 characters'),
     });
     const result = schema.safeParse(req.body);
-    if (!result.success) return badRequest(res, result.error.errors[0].message);
+    if (!result.success) return badRequest(res, result.error.issues[0].message);
     const { attendance_id, student_id, customer_package_id, reason_category, reason_detail } = result.data;
     if (!req.file) return badRequest(res, 'evidence file required');
     const { rows: [student] } = await query(

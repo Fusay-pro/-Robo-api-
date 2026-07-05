@@ -4,7 +4,8 @@ function validate(schema) {
   return (req, res, next) => {
     const result = schema.safeParse(req.body);
     if (!result.success) {
-      return badRequest(res, result.error.errors[0].message);
+      // zod v4 exposes issues on `.issues`, not `.errors`
+      return badRequest(res, result.error.issues[0].message);
     }
     req.body = result.data;
     next();
