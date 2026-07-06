@@ -153,7 +153,7 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
 
   // Students tab
   const { rows: students } = await query(
-    `SELECT s.student_id, s.name, s.nickname, s.age, b.name AS branch,
+    `SELECT s.student_id, s.name, s.nickname, s.age, s.school, b.name AS branch,
             s.approval_status,
             u.name  AS parent_name,
             u.phone AS parent_phone,
@@ -174,8 +174,9 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
     [branchId]
   );
   const studentRows = [
-    ['student_id','name','nickname','age','branch','approval_status','parent_name','parent_phone','classes_remaining','joined_date'],
-    ...students.map(r => [r.student_id, r.name, r.nickname ?? '', r.age ?? '', r.branch, r.approval_status, r.parent_name ?? '', r.parent_phone ?? '', r.classes_remaining, String(r.joined_date)]),
+    // Nickname leads — staff know the kids by nickname, full name is the lookup detail
+    ['student_id','nickname','name','school','age','branch','approval_status','parent_name','parent_phone','classes_remaining','joined_date'],
+    ...students.map(r => [r.student_id, r.nickname ?? '', r.name, r.school ?? '', r.age ?? '', r.branch, r.approval_status, r.parent_name ?? '', r.parent_phone ?? '', r.classes_remaining, r.joined_date instanceof Date ? r.joined_date.toISOString().slice(0, 10) : String(r.joined_date)]),
   ];
   await clearAndWrite(sheets, operationalId, 'Students', studentRows);
   rowsWritten.students = students.length;
@@ -585,6 +586,7 @@ async function importStudentsFromSheet(branchId, userId) {
   const iDob    = col(['วัน เดือน ปี เกิด', 'วันเกิด', 'เกิด']);
   const iAge    = col(['อายุ']);
   const iCourse = col(['คอร์สเรียน', 'คอร์ส']);
+  const iSchool = col(['โรงเรียน']);
   const iBal    = col(['คงเหลือ']);
   const iPhone  = col(['เบอร์มือถือ', 'เบอร์โทร']);
   // Existing parent-code column (e.g. รหัสผู้ปกครอง / RCP), if the sheet already has one
@@ -702,12 +704,21 @@ async function importStudentsFromSheet(branchId, userId) {
     if (!name) { result.skipped++; continue; }
 
     try {
-      // Skip duplicates
+      const school = iSchool !== null ? (row[iSchool] || '').trim() || null : null;
+
+      // Skip duplicates — but backfill school on already-imported students so
+      // re-running the import picks up newly-mapped sheet columns.
       const { rows: [existing] } = await query(
         'SELECT student_id FROM students WHERE name = $1 AND branch_id = $2 AND deleted_at IS NULL',
         [name, branchId]
       );
-      if (existing) { result.skipped++; continue; }
+      if (existing) {
+        if (school) {
+          await query('UPDATE students SET school = $1 WHERE student_id = $2 AND school IS NULL', [school, existing.student_id]);
+        }
+        result.skipped++;
+        continue;
+      }
 
       const nickname    = iNick !== null ? (row[iNick] || '').trim() || null : null;
       const dob         = iDob  !== null ? parseThaiDate(row[iDob]) : null;
@@ -733,9 +744,9 @@ async function importStudentsFromSheet(branchId, userId) {
       if (parent) parentCodeColumn[ri] = parent.user_code;
 
       const { rows: [student] } = await query(
-        `INSERT INTO students (branch_id, parent_user_id, name, nickname, date_of_birth, age, approval_status, student_code)
-         VALUES ($1, $2, $3, $4, $5, $6, 'approved', $7) RETURNING student_id`,
-        [branchId, parent ? parent.user_id : null, name, nickname, dob, age, student_code]
+        `INSERT INTO students (branch_id, parent_user_id, name, nickname, date_of_birth, age, approval_status, student_code, school)
+         VALUES ($1, $2, $3, $4, $5, $6, 'approved', $7, $8) RETURNING student_id`,
+        [branchId, parent ? parent.user_id : null, name, nickname, dob, age, student_code, school]
       );
 
       // Package / class balance
