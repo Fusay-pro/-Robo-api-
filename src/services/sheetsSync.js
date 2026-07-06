@@ -262,6 +262,21 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
   await clearAndWrite(sheets, operationalId, 'Packages', packageRows);
   rowsWritten.packages = packages.length;
 
+  // Parents tab
+  const { rows: parents } = await query(
+    `SELECT user_code, name
+     FROM users
+     WHERE branch_id = $1 AND role = 'parent' AND deleted_at IS NULL
+     ORDER BY name`,
+    [branchId]
+  );
+  const parentRows = [
+    ['parent_code', 'name'],
+    ...parents.map(r => [r.user_code ?? '', r.name]),
+  ];
+  await clearAndWrite(sheets, operationalId, 'Parents', parentRows);
+  rowsWritten.parents = parents.length;
+
   // Transactions tab (finance sheet)
   if (financeId) {
     const { rows: transactions } = await query(
