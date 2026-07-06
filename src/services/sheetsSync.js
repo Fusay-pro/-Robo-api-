@@ -33,7 +33,21 @@ async function getBranchSheetIds(branchId) {
   };
 }
 
+// Creates the tab if the spreadsheet doesn't already have one with this title.
+// clearAndWrite/readTab operate on a fixed A:Z range, which the Sheets API
+// rejects with "Unable to parse range" if the named sheet doesn't exist yet —
+// this is why a brand-new spreadsheet (never pushed to before) breaks Sync.
+async function ensureTabExists(sheets, spreadsheetId, tabName) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  if (meta.data.sheets.some(s => s.properties.title === tabName)) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: tabName } } }] },
+  });
+}
+
 async function clearAndWrite(sheets, spreadsheetId, tabName, rows) {
+  await ensureTabExists(sheets, spreadsheetId, tabName);
   await sheets.spreadsheets.values.clear({
     spreadsheetId,
     range: `${tabName}!A:Z`,
@@ -48,11 +62,17 @@ async function clearAndWrite(sheets, spreadsheetId, tabName, rows) {
 }
 
 async function readTab(sheets, spreadsheetId, tabName) {
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `${tabName}!A:Z`,
-  });
-  return res.data.values || [];
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${tabName}!A:Z`,
+    });
+    return res.data.values || [];
+  } catch (err) {
+    // Tab doesn't exist yet (nothing has been pushed here before) — no data to read/diff.
+    if (err.message && err.message.includes('Unable to parse range')) return [];
+    throw err;
+  }
 }
 
 // ─── Finance sync (existing, runs 1st of each month) ─────────────────────────
@@ -272,7 +292,7 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
   const synced_at = new Date().toISOString();
   await query(
     `INSERT INTO sheets_sync_log (branch_id, sync_month, status, sync_type, triggered_by, rows_written)
-     VALUES ($1, to_char(now(),'YYYY-MM'), 'success', 'operational', $2, $3)`,
+     VALUES ($1, date_trunc('month', now())::date, 'success', 'operational', $2, $3)`,
     [branchId, triggeredBy, Object.values(rowsWritten).reduce((a, b) => a + b, 0)]
   );
 
