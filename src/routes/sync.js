@@ -78,6 +78,20 @@ router.get('/sheets', roleGuard(['owner', 'super_owner']), async (req, res) => {
   });
 });
 
+// POST /admin/sync/sheets/reveal — same data as GET /sheets, but the UI gates
+// displaying the URLs on screen behind a password re-confirmation first.
+router.post('/sheets/reveal', roleGuard(['owner', 'super_owner']), passwordSchema, async (req, res) => {
+  if (!(await verifyPassword(req, res))) return;
+  const { rows: [branch] } = await query(
+    'SELECT sheets_operational_id, sheets_finance_id FROM branches WHERE branch_id = $1',
+    [req.user.branch_id]
+  );
+  res.json({
+    sheets_operational_id: branch?.sheets_operational_id ?? null,
+    sheets_finance_id:     branch?.sheets_finance_id     ?? null,
+  });
+});
+
 // PATCH /admin/sync/sheets — update sheet URLs (password required)
 router.patch('/sheets',
   roleGuard(['owner', 'super_owner']),
