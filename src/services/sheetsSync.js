@@ -174,9 +174,8 @@ async function pushOperationalSync(branchId, triggeredBy = 'cron') {
     [branchId]
   );
   const studentRows = [
-    // Nickname leads — staff know the kids by nickname, full name is the lookup detail
-    ['student_id','nickname','name','school','age','branch','approval_status','parent_name','parent_phone','classes_remaining','joined_date'],
-    ...students.map(r => [r.student_id, r.nickname ?? '', r.name, r.school ?? '', r.age ?? '', r.branch, r.approval_status, r.parent_name ?? '', r.parent_phone ?? '', r.classes_remaining, r.joined_date instanceof Date ? r.joined_date.toISOString().slice(0, 10) : String(r.joined_date)]),
+    ['student_id','name','nickname','school','age','branch','approval_status','parent_name','parent_phone','classes_remaining','joined_date'],
+    ...students.map(r => [r.student_id, r.name, r.nickname ?? '', r.school ?? '', r.age ?? '', r.branch, r.approval_status, r.parent_name ?? '', r.parent_phone ?? '', r.classes_remaining, r.joined_date instanceof Date ? r.joined_date.toISOString().slice(0, 10) : String(r.joined_date)]),
   ];
   await clearAndWrite(sheets, operationalId, 'Students', studentRows);
   rowsWritten.students = students.length;
