@@ -341,4 +341,26 @@ router.patch('/:id',
   }
 );
 
+// DELETE /students/:id — soft-delete a student (owner only, password-confirmed)
+router.delete('/:id',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({ password: z.string().min(1) })),
+  async (req, res) => {
+    const student = await loadStudentAuthorized(req, res);
+    if (!student) return;
+
+    const { rows: [user] } = await query(
+      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
+      [req.user.user_id]
+    );
+    if (!user?.password_hash)
+      return res.status(403).json({ error: 'Password verification not available for this account' });
+    const ok = await bcrypt.compare(req.body.password, user.password_hash);
+    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
+
+    await query('UPDATE students SET deleted_at = NOW() WHERE student_id = $1', [req.params.id]);
+    res.json({ ok: true });
+  }
+);
+
 module.exports = router;
