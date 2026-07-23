@@ -43,7 +43,7 @@ router.get('/stats', async (req, res) => {
          FROM package_redemptions
          GROUP BY customer_package_id
        ) used ON used.customer_package_id = cp.customer_package_id
-       WHERE s.branch_id = $1 AND s.deleted_at IS NULL
+       WHERE s.branch_id = $1 AND s.deleted_at IS NULL AND s.archived_at IS NULL
        GROUP BY s.student_id
      )
      SELECT
@@ -95,6 +95,9 @@ router.get('/', async (req, res) => {
   } else {
     const conditions = ['s.branch_id = $1', 's.deleted_at IS NULL'];
     const params = [req.user.branch_id];
+
+    // Archived students are hidden by default; ?archived=true shows only them
+    conditions.push(req.query.archived === 'true' ? 's.archived_at IS NOT NULL' : 's.archived_at IS NULL');
 
     if (search) {
       params.push(`%${search}%`);
@@ -335,6 +338,23 @@ router.patch('/:id',
          pre_existing_conditions = COALESCE($4, pre_existing_conditions)
        WHERE student_id = $5 AND deleted_at IS NULL RETURNING *`,
       [name, nickname, age, pre_existing_conditions, req.params.id]
+    );
+    if (!rows[0]) return notFound(res);
+    res.json(rows[0]);
+  }
+);
+
+// PATCH /students/:id/archive — hide/unhide a student (reversible, no password)
+router.patch('/:id/archive',
+  roleGuard(['owner', 'staff', 'super_owner']),
+  validate(z.object({ archived: z.boolean() })),
+  async (req, res) => {
+    const student = await loadStudentAuthorized(req, res);
+    if (!student) return;
+    const { rows } = await query(
+      `UPDATE students SET archived_at = ${req.body.archived ? 'NOW()' : 'NULL'}
+       WHERE student_id = $1 AND deleted_at IS NULL RETURNING student_id, archived_at`,
+      [req.params.id]
     );
     if (!rows[0]) return notFound(res);
     res.json(rows[0]);
