@@ -280,6 +280,31 @@ router.get('/:id', async (req, res) => {
   res.json({ ...student, packages, latestEnrollment: latestEnrollment ?? null });
 });
 
+// GET /students/:id/attendance — per-student attendance history + summary counts
+router.get('/:id/attendance', async (req, res) => {
+  const student = await loadStudentAuthorized(req, res);
+  if (!student) return;
+
+  const { rows: records } = await query(
+    `SELECT a.attendance_id, a.status, a.marked_at, a.notes,
+            sc.starts_at,
+            COALESCE(c.name, cs.name, 'Session') AS course_name
+     FROM attendance a
+     JOIN schedules sc            ON a.schedule_id = sc.schedule_id
+     LEFT JOIN courses c          ON sc.course_id = c.course_id
+     LEFT JOIN contract_schools cs ON sc.contract_school_id = cs.contract_school_id
+     WHERE a.student_id = $1
+     ORDER BY sc.starts_at DESC
+     LIMIT 300`,
+    [req.params.id]
+  );
+
+  const summary = { present: 0, absent: 0, excused: 0, total: records.length };
+  for (const r of records) if (summary[r.status] !== undefined) summary[r.status]++;
+
+  res.json({ summary, records });
+});
+
 // GET /students/:id/notes — internal staff notes, never visible to parents
 router.get('/:id/notes', roleGuard(['owner', 'staff', 'super_owner']), async (req, res) => {
   const student = await loadStudentAuthorized(req, res);
