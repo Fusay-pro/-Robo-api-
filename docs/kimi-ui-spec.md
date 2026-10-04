@@ -1,5 +1,5 @@
 # Robotics School — UI Specification for Kimi
-**Two apps, one backend API at http://localhost:3000**
+**Two apps, one backend API at http://localhost:3002**
 
 ---
 
@@ -423,7 +423,7 @@ Used by staff and owners on desktop or tablet. Email/password login.
 
 ## API Base URL
 ```
-Development:  http://localhost:3000
+Development:  http://localhost:3002
 Production:   https://api.yourdomain.com
 ```
 

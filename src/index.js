@@ -2,7 +2,7 @@ require('dotenv').config();
 const { createApp } = require('./app');
 
 const app  = createApp();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 
 app.listen(PORT, () => console.log(`Robotics School API running on port ${PORT}`));
 
