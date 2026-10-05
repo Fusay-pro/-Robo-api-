@@ -8,6 +8,38 @@ const { sendToRole } = require('../services/pushNotify');
 const { notFound } = require('../utils/errors');
 
 const LIMIT_MAX = 200;
+const BULK_DELETE_MAX = 20;   // keeps a mis-click from wiping the whole roster
+
+// Build the branch-scoped WHERE clause shared by the staff/owner student listing
+// and the id-only listing behind "select all". Params start at $1; callers that
+// filter on the parent name must LEFT JOIN users u.
+function staffListFilter(req) {
+  const conditions = ['s.branch_id = $1', 's.deleted_at IS NULL'];
+  const params = [req.user.branch_id];
+
+  // Archived students are hidden by default; ?archived=true shows only them
+  conditions.push(req.query.archived === 'true' ? 's.archived_at IS NOT NULL' : 's.archived_at IS NULL');
+
+  const search = (req.query.search || '').trim();
+  if (search) {
+    params.push(`%${search}%`);
+    conditions.push(`(s.name ILIKE $${params.length} OR s.nickname ILIKE $${params.length} OR u.name ILIKE $${params.length})`);
+  }
+
+  const approvalStatus = (req.query.approval_status || '').trim();
+  if (approvalStatus) {
+    const statuses = approvalStatus.split(',').map(s => s.trim()).filter(s => ['pending', 'approved', 'rejected'].includes(s));
+    if (statuses.length === 1) {
+      params.push(statuses[0]);
+      conditions.push(`s.approval_status = $${params.length}`);
+    } else if (statuses.length > 1) {
+      params.push(statuses);
+      conditions.push(`s.approval_status = ANY($${params.length})`);
+    }
+  }
+
+  return { where: conditions.join(' AND '), params };
+}
 
 // Load a student and enforce access: parents may only touch their own children;
 // staff/owner are scoped to their branch; super_owner sees all. Sends the
@@ -56,6 +88,24 @@ router.get('/stats', async (req, res) => {
   res.json(r);
 });
 
+// GET /students/ids — every student id matching the given filters, unpaginated.
+// Lets the staff UI "select all" without walking every page. Must precede /:id.
+router.get('/ids',
+  roleGuard(['owner', 'staff', 'super_owner']),
+  async (req, res) => {
+    const { where, params } = staffListFilter(req);
+    const { rows } = await query(
+      `SELECT s.student_id
+       FROM students s
+       LEFT JOIN users u ON s.parent_user_id = u.user_id
+       WHERE ${where}
+       ORDER BY s.name`,
+      params
+    );
+    res.json({ ids: rows.map(r => r.student_id), total: rows.length });
+  }
+);
+
 router.get('/', async (req, res) => {
   const limit  = Math.min(parseInt(req.query.limit)  || 50, LIMIT_MAX);
   const offset = parseInt(req.query.offset) || 0;
@@ -93,30 +143,7 @@ router.get('/', async (req, res) => {
       search ? [req.user.user_id, `%${search}%`] : [req.user.user_id]
     ));
   } else {
-    const conditions = ['s.branch_id = $1', 's.deleted_at IS NULL'];
-    const params = [req.user.branch_id];
-
-    // Archived students are hidden by default; ?archived=true shows only them
-    conditions.push(req.query.archived === 'true' ? 's.archived_at IS NOT NULL' : 's.archived_at IS NULL');
-
-    if (search) {
-      params.push(`%${search}%`);
-      conditions.push(`(s.name ILIKE $${params.length} OR s.nickname ILIKE $${params.length} OR u.name ILIKE $${params.length})`);
-    }
-
-    const approvalStatus = (req.query.approval_status || '').trim();
-    if (approvalStatus) {
-      const statuses = approvalStatus.split(',').map(s => s.trim()).filter(s => ['pending', 'approved', 'rejected'].includes(s));
-      if (statuses.length === 1) {
-        params.push(statuses[0]);
-        conditions.push(`s.approval_status = $${params.length}`);
-      } else if (statuses.length > 1) {
-        params.push(statuses);
-        conditions.push(`s.approval_status = ANY($${params.length})`);
-      }
-    }
-
-    const where = conditions.join(' AND ');
+    const { where, params } = staffListFilter(req);
     ({ rows } = await query(
       `SELECT s.*,
               u.name  AS parent_name,
@@ -405,6 +432,39 @@ router.delete('/:id',
 
     await query('UPDATE students SET deleted_at = NOW() WHERE student_id = $1', [req.params.id]);
     res.json({ ok: true });
+  }
+);
+
+// POST /students/bulk-delete — soft-delete many students in one go
+// (owner only, password-confirmed). Ids outside the caller's branch are skipped
+// rather than deleted, so a tampered list can't reach another branch's students.
+router.post('/bulk-delete',
+  roleGuard(['owner', 'super_owner']),
+  validate(z.object({
+    password:    z.string().min(1),
+    student_ids: z.array(z.number().int().positive()).min(1).max(BULK_DELETE_MAX),
+  })),
+  async (req, res) => {
+    const { rows: [user] } = await query(
+      'SELECT password_hash FROM users WHERE user_id = $1 AND deleted_at IS NULL',
+      [req.user.user_id]
+    );
+    if (!user?.password_hash)
+      return res.status(403).json({ error: 'Password verification not available for this account' });
+    const ok = await bcrypt.compare(req.body.password, user.password_hash);
+    if (!ok) return res.status(403).json({ error: 'Incorrect password' });
+
+    const ids = [...new Set(req.body.student_ids)];
+    const branchScope = req.user.role === 'super_owner' ? null : req.user.branch_id;
+    const { rows } = await query(
+      `UPDATE students SET deleted_at = NOW()
+       WHERE student_id = ANY($1::int[])
+         AND deleted_at IS NULL
+         AND ($2::int IS NULL OR branch_id = $2)
+       RETURNING student_id`,
+      [ids, branchScope]
+    );
+    res.json({ deleted: rows.length, skipped: ids.length - rows.length });
   }
 );
 
