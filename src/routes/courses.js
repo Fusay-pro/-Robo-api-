@@ -21,9 +21,9 @@ router.post('/',
   roleGuard(['owner']),
   validate(z.object({
     name:          z.string().min(1),
-    description:   z.string().optional(),
-    level_id:      z.number().int().optional(),
-    robot_type_id: z.number().int().optional(),
+    description:   z.string().nullish(),
+    level_id:      z.number().int().nullish(),
+    robot_type_id: z.number().int().nullish(),
   })),
   async (req, res) => {
     const { name, description, level_id, robot_type_id } = req.body;
@@ -39,9 +39,9 @@ router.patch('/:id',
   roleGuard(['owner']),
   validate(z.object({
     name:          z.string().min(1).optional(),
-    description:   z.string().optional(),
-    level_id:      z.number().int().optional(),
-    robot_type_id: z.number().int().optional(),
+    description:   z.string().nullish(),
+    level_id:      z.number().int().nullish(),
+    robot_type_id: z.number().int().nullish(),
   })),
   async (req, res) => {
     const { name, description, level_id, robot_type_id } = req.body;
