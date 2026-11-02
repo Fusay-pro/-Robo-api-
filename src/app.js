@@ -13,17 +13,25 @@ function createApp() {
   app.set('trust proxy', 1);
 
   app.use(helmet());
-  // Allowed browser origins: localhost (dev), the configured app URLs, and this
-  // account's Vercel deployments — production aliases (robo-staff/robo-parent)
-  // plus the auto-generated preview/branch URLs (which change every deploy).
+  // Allowed browser origins: localhost (dev), the configured app URLs, the
+  // subdomains of APP_DOMAIN (staff./parent.), and this account's Vercel
+  // deployments — production aliases (robo-staff/robo-parent) plus the
+  // auto-generated preview/branch URLs (which change every deploy).
   const staticOrigins = [
     process.env.PARENT_APP_URL, process.env.STAFF_APP_URL,
     'https://robo-staff.vercel.app', 'https://robo-parent.vercel.app',
   ].filter(Boolean);
+  // Custom-domain rollout: staff.<APP_DOMAIN> / parent.<APP_DOMAIN>. The Vercel
+  // rules below stay in place so the old URLs keep working through the cutover.
+  const appDomain = process.env.APP_DOMAIN;
+  const appDomainRe = appDomain
+    ? new RegExp(`^https://(staff|parent)\\.${appDomain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
+    : null;
   app.use(cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);                        // curl / mobile / server-to-server
       if (staticOrigins.includes(origin)) return cb(null, true);
+      if (appDomainRe && appDomainRe.test(origin)) return cb(null, true);
       if (/^http:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
       // Vercel deployment/preview URLs owned by this account
       if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin) &&
