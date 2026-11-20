@@ -99,7 +99,7 @@ router.get('/ids',
        FROM students s
        LEFT JOIN users u ON s.parent_user_id = u.user_id
        WHERE ${where}
-       ORDER BY s.name`,
+       ORDER BY s.name, s.student_id`,
       params
     );
     res.json({ ids: rows.map(r => r.student_id), total: rows.length });
@@ -133,7 +133,7 @@ router.get('/', async (req, res) => {
       `SELECT s.*, ${classesRemainingSubquery}
        FROM students s
        WHERE s.parent_user_id = $1 AND s.deleted_at IS NULL ${searchClause}
-       ORDER BY s.name LIMIT $2 OFFSET $3`,
+       ORDER BY s.name, s.student_id LIMIT $2 OFFSET $3`,
       params
     ));
     // Count query has different parameter positions than the list query above
@@ -156,7 +156,7 @@ router.get('/', async (req, res) => {
        FROM students s
        LEFT JOIN users u ON s.parent_user_id = u.user_id
        WHERE ${where}
-       ORDER BY s.name LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+       ORDER BY s.name, s.student_id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     ));
     ({ rows: [{ count }] } = await query(
