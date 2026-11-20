@@ -8,7 +8,7 @@ const { sendToRole } = require('../services/pushNotify');
 const { notFound } = require('../utils/errors');
 
 const LIMIT_MAX = 200;
-const BULK_DELETE_MAX = 20;   // keeps a mis-click from wiping the whole roster
+const BULK_DELETE_MAX = 50;   // one page of the staff students list; a cap still keeps a mis-click from wiping the roster
 
 // Build the branch-scoped WHERE clause shared by the staff/owner student listing
 // and the id-only listing behind "select all". Params start at $1; callers that
