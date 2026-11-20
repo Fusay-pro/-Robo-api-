@@ -170,3 +170,15 @@ test('paging through students with identical names visits each exactly once', as
   }
   expect(new Set(seen).size).toBe(3);
 });
+
+// The staff UI must not offer a bigger selection than this server accepts: the
+// two caps live in different repositories, and a server that has not been
+// restarted after a deploy still enforces the old one. The list says what it
+// will take, so the UI can follow it instead of a hardcoded constant.
+test('the list response advertises the bulk-delete cap', async () => {
+  const res = await request(app)
+    .get('/students?limit=1&offset=0')
+    .set(bearer(ownerToken(branchMain)));
+  expect(res.status).toBe(200);
+  expect(res.body.bulk_delete_max).toBe(50);
+});

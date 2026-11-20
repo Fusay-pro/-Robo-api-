@@ -164,7 +164,12 @@ router.get('/', async (req, res) => {
       params
     ));
   }
-  res.json({ data: rows, total: parseInt(count), limit, offset });
+  // `bulk_delete_max` travels with the list so the staff UI can size its
+  // selection to what THIS server accepts. The two caps live in separate
+  // repositories, and a server that has not been restarted after a deploy
+  // still enforces the old one — a UI reading this can never offer a batch
+  // that comes back rejected.
+  res.json({ data: rows, total: parseInt(count), limit, offset, bulk_delete_max: BULK_DELETE_MAX });
 });
 
 router.post('/',
