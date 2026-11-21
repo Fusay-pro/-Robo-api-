@@ -4,6 +4,7 @@ const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const path    = require('path');
 const { authMiddleware } = require('./middleware/auth');
+const { errorLogMiddleware } = require('./middleware/errorLog');
 const { rlsMiddleware }  = require('./config/rls');
 
 function createApp() {
@@ -53,6 +54,12 @@ function createApp() {
   // Stricter limit for OTP verification — 5 attempts per 15 min to prevent brute-force
   app.use('/auth/verify-otp', rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false }));
 
+  // Mounted before the routes and after the limiters: it wraps res.json for
+  // everything below, including /auth and the public routes, and never sees
+  // the limiter's own 429s (which the log skips anyway). It also puts an
+  // x-request-id on every response, so a report can be matched to its row.
+  app.use(errorLogMiddleware);
+
   app.use(express.json());
   app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
@@ -100,6 +107,9 @@ function createApp() {
     console.error(err.stack || err.message);
     const status = err.status || 500;
     const message = status < 500 ? (err.message || 'Request failed') : 'Internal server error';
+    // The client is told "Internal server error" and nothing more; the stack
+    // goes to the log row instead, where only an owner can read it.
+    res.locals.errorStack = err.stack || null;
     res.status(status).json({ error: message });
   });
 

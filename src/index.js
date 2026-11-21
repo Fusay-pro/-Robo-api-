@@ -11,3 +11,4 @@ require('./services/warningCron');
 require('./services/reservationReminder');
 require('./services/releaseUnconfirmed');
 require('./services/sheetsSync');
+require('./services/errorLogPrune');
