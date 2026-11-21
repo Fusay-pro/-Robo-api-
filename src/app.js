@@ -100,6 +100,13 @@ function createApp() {
   app.use('/announcements',    require('./routes/announcements'));
   app.use('/requests',         require('./routes/requests'));
   app.use('/admin/sync',       require('./routes/sync'));
+  app.use('/admin/logs',       require('./routes/adminLogs'));
+  // A crash in the browser, reported by the staff app's error boundary. Any
+  // authenticated user may report one, so it carries its own tight limit
+  // rather than relying on the generous global one.
+  app.use('/client-errors',
+    rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false }),
+    require('./routes/clientErrors').router);
 
   // Global error handler — log details server-side, but never leak internals
   // (SQL errors, stack fragments) to clients on unexpected 500s.
